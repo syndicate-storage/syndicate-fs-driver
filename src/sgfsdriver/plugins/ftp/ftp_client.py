@@ -115,7 +115,10 @@ class ftp_client(object):
         self.session.login(self.user, self.password)
 
     def close(self):
-        self.session.quit()
+        try:
+            self.session.quit()
+        except:
+            pass
 
     def reconnect(self):
         self.close()
