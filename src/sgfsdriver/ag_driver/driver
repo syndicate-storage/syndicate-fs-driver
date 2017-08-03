@@ -41,6 +41,7 @@ DEFAULT_DATA_CACHE_TTL = 60 * 5     # 5min
 fs = None
 storage_dir = None
 sync_on_init = True
+follow_symlink = True
 read_ttl = DEFAULT_READ_TTL * 1000
 write_ttl = DEFAULT_WRITE_TTL * 1000
 data_cache_size = DEFAULT_DATA_CACHE_SIZE
@@ -56,6 +57,7 @@ def _initFS(driver_config, driver_secrets, role):
     global fs
     global storage_dir
     global sync_on_init
+    global follow_symlink
     global read_ttl
     global write_ttl
     global data_cache_size
@@ -85,6 +87,9 @@ def _initFS(driver_config, driver_secrets, role):
 
     if "SYNC_ON_INIT" in driver_config:
         sync_on_init = bool(driver_config["SYNC_ON_INIT"])
+
+    if "FOLLOW_SYMLINK" in driver_config:
+        follow_symlink = bool(driver_config["FOLLOW_SYMLINK"])
 
     if "MS_TTL" in driver_config:
         read_ttl = int(driver_config["MS_TTL"]) * 1000
@@ -267,7 +272,8 @@ def _resync(path):
 
                     if st.directory:
                         # do sync recursively
-                        stack.append(entry_path)
+                        if (st.symlink and follow_symlink) or (not st.symlink):
+                            stack.append(entry_path)
 
                     datasets_update_cb([], [e], [])
 

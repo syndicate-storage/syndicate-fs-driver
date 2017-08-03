@@ -31,7 +31,9 @@ class afsstat(object):
     """
     Abstract File Status
     """
-    def __init__(self, directory=False,
+    def __init__(self,
+                 directory=False,
+                 symlink=False,
                  path=None,
                  name=None,
                  size=0,
@@ -39,6 +41,7 @@ class afsstat(object):
                  create_time=0,
                  modify_time=0):
         self.directory = directory
+        self.symlink = symlink
         self.path = path
         self.name = name
         self.size = size
@@ -61,8 +64,12 @@ class afsstat(object):
         if self.directory:
             rep_d = "D"
 
-        return "<afsstat %s %s %d %s>" % \
-            (rep_d, self.name, self.size, self.checksum)
+        rep_s = "-"
+        if self.symlink:
+            rep_s = "L"
+
+        return "<afsstat %s%s %s %d %s>" % \
+            (rep_d, rep_s, self.name, self.size, self.checksum)
 
     def toJson(self):
         return json.dumps(self.__dict__)
