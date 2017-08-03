@@ -97,8 +97,10 @@ class plugin_impl(abstractfs.afsbase):
             # set inotify
             self.watch_manager = pyinotify.WatchManager()
             self.notify_handler = InotifyEventHandler(self)
-            self.notifier = pyinotify.ThreadedNotifier(self.watch_manager,
-                                                       self.notify_handler)
+            self.notifier = pyinotify.ThreadedNotifier(
+                self.watch_manager,
+                self.notify_handler
+            )
 
         self.notification_cb = None
         # create a re-entrant lock (not a read lock)
@@ -161,15 +163,18 @@ class plugin_impl(abstractfs.afsbase):
                 # start monitoring
                 self.notifier.start()
 
-                mask = (pyinotify.IN_DELETE | pyinotify.IN_CREATE |
-                        pyinotify.IN_MODIFY | pyinotify.IN_ATTRIB |
-                        pyinotify.IN_MOVED_FROM | pyinotify.IN_MOVED_TO |
-                        pyinotify.IN_MOVE_SELF)
+                mask = (
+                    pyinotify.IN_DELETE | pyinotify.IN_CREATE |
+                    pyinotify.IN_MODIFY | pyinotify.IN_ATTRIB |
+                    pyinotify.IN_MOVED_FROM | pyinotify.IN_MOVED_TO |
+                    pyinotify.IN_MOVE_SELF
+                )
                 self.watch_directory = self.watch_manager.add_watch(
                     self.work_root,
                     mask,
                     rec=True,
-                    auto_add=True)
+                    auto_add=True
+                )
             except:
                 self.close()
 
@@ -194,12 +199,14 @@ class plugin_impl(abstractfs.afsbase):
             sb = os.stat(localfs_path)
             return abstractfs.afsstat(
                 directory=stat.S_ISDIR(sb.st_mode),
+                symlink=stat.S_ISLNK(sb.st_mode),
                 path=driver_path,
                 name=os.path.basename(driver_path),
                 size=sb.st_size,
                 checksum=0,
                 create_time=sb.st_ctime,
-                modify_time=sb.st_mtime)
+                modify_time=sb.st_mtime
+            )
 
     def exists(self, path):
         logger.info("exists - %s" % path)

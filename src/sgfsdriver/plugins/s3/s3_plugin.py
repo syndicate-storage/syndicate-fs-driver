@@ -181,13 +181,15 @@ class plugin_impl(abstractfs.afsbase):
             # get stat
             sb = self.s3.stat(s3_path)
             if sb:
-                return abstractfs.afsstat(directory=sb.directory,
-                                          path=driver_path,
-                                          name=os.path.basename(driver_path),
-                                          size=sb.size,
-                                          checksum=sb.checksum,
-                                          create_time=sb.create_time,
-                                          modify_time=sb.modify_time)
+                return abstractfs.afsstat(
+                    directory=sb.directory,
+                    path=driver_path,
+                    name=os.path.basename(driver_path),
+                    size=sb.size,
+                    checksum=sb.checksum,
+                    create_time=sb.create_time,
+                    modify_time=sb.modify_time
+                )
             else:
                 return None
 

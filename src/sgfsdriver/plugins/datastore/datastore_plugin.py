@@ -195,11 +195,13 @@ class plugin_impl(abstractfs.afsbase):
         irods_zone = irods_zone.encode('ascii', 'ignore')
 
         logger.info("__init__: initializing irods_client")
-        self.irods = irods_client.irods_client(host=irods_host,
-                                               port=self.irods_config["port"],
-                                               user=user,
-                                               password=password,
-                                               zone=irods_zone)
+        self.irods = irods_client.irods_client(
+            host=irods_host,
+            port=self.irods_config["port"],
+            user=user,
+            password=password,
+            zone=irods_zone
+        )
 
         if self._role == abstractfs.afsrole.DISCOVER:
             # init bms client
@@ -209,12 +211,14 @@ class plugin_impl(abstractfs.afsbase):
             acceptor = bms_client.bms_message_acceptor("path",
                                                        path_filter)
             logger.info("__init__: path_filter = " + path_filter)
-            self.bms = bms_client.bms_client(host=self.bms_config["host"],
-                                             port=self.bms_config["port"],
-                                             user=user,
-                                             password=password,
-                                             vhost=self.bms_config["vhost"],
-                                             acceptors=[acceptor])
+            self.bms = bms_client.bms_client(
+                host=self.bms_config["host"],
+                port=self.bms_config["port"],
+                user=user,
+                password=password,
+                vhost=self.bms_config["vhost"],
+                acceptors=[acceptor]
+            )
 
             self.notify_handler = BMSEventHandler(self, self.work_root)
             self.bms.setCallbacks(
@@ -310,13 +314,15 @@ class plugin_impl(abstractfs.afsbase):
             # get stat
             sb = self.irods.stat(irods_path)
             if sb:
-                return abstractfs.afsstat(directory=sb.directory,
-                                          path=driver_path,
-                                          name=os.path.basename(driver_path),
-                                          size=sb.size,
-                                          checksum=sb.checksum,
-                                          create_time=sb.create_time,
-                                          modify_time=sb.modify_time)
+                return abstractfs.afsstat(
+                    directory=sb.directory,
+                    path=driver_path,
+                    name=os.path.basename(driver_path),
+                    size=sb.size,
+                    checksum=sb.checksum,
+                    create_time=sb.create_time,
+                    modify_time=sb.modify_time
+                )
             else:
                 return None
 

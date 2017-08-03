@@ -80,7 +80,8 @@ class bms_registration_result(object):
             return bms_registration_result(
                 client=bms_registration_result_client.fromDict(msg['client']),
                 lease_start=msg['lease_start'],
-                lease_expire=msg['lease_expire'])
+                lease_expire=msg['lease_expire']
+            )
         else:
             return None
 
@@ -240,7 +241,8 @@ class bms_client(object):
             queue=self.queue,
             durable=False,
             exclusive=False,
-            auto_delete=True)
+            auto_delete=True
+        )
 
     def _onQueueDeclareok(self, mothod_frame):
         # set consumer
@@ -248,7 +250,8 @@ class bms_client(object):
         self.consumer_tag = self.channel.basic_consume(
             self._onMessage,
             queue=self.queue,
-            no_ack=False)
+            no_ack=False
+        )
 
         # call callback
         if self.on_connect_callback:
@@ -338,7 +341,8 @@ class bms_client(object):
             exchange=BMS_REGISTRATION_EXCHANGE,
             routing_key=BMS_REGISTRATION_QUEUE,
             properties=prop,
-            body=msg)
+            body=msg
+        )
 
         if self.registration_timer:
             self.registration_timer.cancel()
@@ -362,10 +366,14 @@ class bms_client(object):
         for acceptor in acceptors:
             acceptor_arr.append(acceptor.asDict())
 
-        reg_msg = {"request": "lease",
-                   "client": {"user_id": self.user,
-                              "application_name": self.appid},
-                   "acceptors": acceptor_arr}
+        reg_msg = {
+            "request": "lease",
+            "client": {
+                "user_id": self.user,
+                "application_name": self.appid
+            },
+            "acceptors": acceptor_arr
+        }
         reg_msg_str = json.dumps(reg_msg)
 
         self._registerByString(reg_msg_str)

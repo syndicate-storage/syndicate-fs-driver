@@ -34,7 +34,6 @@ for plugin in plugins:
 
 # dependencies
 dependencies = [
-    'ftputil',
     'pika',
     'python-irodsclient',
     'pyinotify',

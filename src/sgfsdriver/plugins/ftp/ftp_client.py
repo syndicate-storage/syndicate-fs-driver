@@ -18,10 +18,13 @@
 
 import traceback
 import os
-import stat
 import logging
+import time
 import ftplib
-import ftputil
+
+from datetime import datetime
+from expiringdict import ExpiringDict
+from io import BytesIO
 
 logger = logging.getLogger('ftp_client')
 logger.setLevel(logging.DEBUG)
@@ -46,15 +49,19 @@ Interface class to FTP
 class ftp_status(object):
     def __init__(self,
                  directory=False,
+                 symlink=False,
                  path=None,
                  name=None,
                  size=0,
-                 create_time=0):
+                 create_time=0,
+                 modify_time=0):
         self.directory = directory
+        self.symlink = symlink
         self.path = path
         self.name = name
         self.size = size
         self.create_time = create_time
+        self.modify_time = modify_time
 
     def __eq__(self, other):
         return self.__dict__ == other.__dict__
@@ -64,8 +71,12 @@ class ftp_status(object):
         if self.directory:
             rep_d = "D"
 
-        return "<ftp_status %s %s %d>" % \
-            (rep_d, self.name, self.size)
+        rep_s = "-"
+        if self.symlink:
+            rep_s = "S"
+
+        return "<ftp_status %s%s %s %d>" % \
+            (rep_d, rep_s, self.name, self.size)
 
 
 class ftp_client(object):
@@ -92,25 +103,19 @@ class ftp_client(object):
 
         self.session = None
 
-    def connect(self):
-        my_session_factory = ftputil.session.session_factory(
-            base_class=ftplib.FTP,
-            port=self.port,
-            debug_level=2
+        # init cache
+        self.meta_cache = ExpiringDict(
+            max_len=METADATA_CACHE_SIZE,
+            max_age_seconds=METADATA_CACHE_TTL
         )
 
-        self.session = ftputil.FTPHost(
-            self.host,
-            self.user,
-            self.password,
-            session_factory=my_session_factory
-        )
-        self.session.stat_cache.resize(METADATA_CACHE_SIZE)
-        self.session.stat_cache.max_age = METADATA_CACHE_TTL
-        self.session.stat_cache.enable()
+    def connect(self):
+        self.session = ftplib.FTP()
+        self.session.connect(self.host, self.port)
+        self.session.login(self.user, self.password)
 
     def close(self):
-        self.session.close()
+        self.session.quit()
 
     def reconnect(self):
         self.close()
@@ -123,31 +128,117 @@ class ftp_client(object):
     def __exit__(self, exc_type, exc_value, traceback):
         self.close()
 
+    def _parse_MLSD(self, parent, line):
+        # modify=20170623195719;perm=adfr;size=454060;type=file;unique=13U670966;UNIX.group=570;UNIX.mode=0444;UNIX.owner=14; gbrel.txt
+        fields = line.split(";")
+        stat_dict = {}
+        for field in fields:
+            if "=" in field:
+                # key-value field
+                fv = field.strip()
+                fv_idx = fv.index("=")
+                key = fv[:fv_idx].lower()
+                value = fv[fv_idx+1:]
+            else:
+                key = "name"
+                value = field.strip()
+
+            stat_dict[key] = value
+
+        full_path = parent.rstrip("/") + "/" + stat_dict["name"]
+
+        directory = False
+        symlink = False
+        if "type" in stat_dict:
+            t = stat_dict["type"]
+            if t in ["cdir", "pdir"]:
+                return None
+
+            if t == "dir":
+                directory = True
+            elif t == "OS.unix=symlink":
+                symlink = True
+            elif t.startswith("OS.unix=slink:"):
+                symlink = True
+
+            if t not in ["dir", "file", "OS.unix=symlink"]:
+                raise IOError("Unknown type : %s" % t)
+
+        size = 0
+        if "size" in stat_dict:
+            size = long(stat_dict["size"])
+
+        modify_time = None
+        if "modify" in stat_dict:
+            modify_time_obj = datetime.strptime(stat_dict["modify"], "%Y%m%d%H%M%S")
+            modify_time = time.mktime(modify_time_obj.timetuple())
+
+        create_time = None
+        if "create" in stat_dict:
+            create_time_obj = datetime.strptime(stat_dict["create"], "%Y%m%d%H%M%S")
+            create_time = time.mktime(create_time_obj.timetuple())
+
+        if "name" in stat_dict:
+            return ftp_status(
+                directory=directory,
+                symlink=symlink,
+                path=full_path,
+                name=stat_dict["name"],
+                size=size,
+                create_time=create_time,
+                modify_time=modify_time
+            )
+        else:
+            return None
+
+    def _ensureDirEntryStatLoaded(self, path):
+        # reuse cache
+        if path in self.meta_cache:
+            return self.meta_cache[path]
+
+        stats = []
+        try:
+            entries = []
+            self.session.cwd(path)
+            self.session.retrlines("MLSD", entries.append)
+            for ent in entries:
+                st = self._parse_MLSD(path, ent)
+                if st:
+                    stats.append(st)
+        except ftplib.error_perm:
+            logger.error("_ensureDirEntryStatLoaded: " + traceback.format_exc())
+            traceback.print_exc()
+
+        self.meta_cache[path] = stats
+        return stats
+
     """
     Returns ftp_status
     """
     def stat(self, path):
         try:
-            sb = self.session.lstat(path)
-            return ftp_status(
-                directory=stat.S_ISDIR(sb.st_mode),
-                path=path,
-                name=os.path.basename(path),
-                size=sb.st_size,
-                create_time=sb.st_ctime
-            )
+            # try bulk loading of stats
+            parent = os.path.dirname(path)
+            stats = self._ensureDirEntryStatLoaded(parent)
+            if stats:
+                for sb in stats:
+                    if sb.path == path:
+                        return sb
+            return None
         except Exception:
+            # fall if cannot access the parent dir
             return None
 
     """
     Returns directory entries in string
     """
     def list_dir(self, path):
-        try:
-            entries = self.session.listdir(path)
-            return entries
-        except Exception:
-            return None
+        stats = self._ensureDirEntryStatLoaded(path)
+        entries = []
+        if stats:
+            for sb in stats:
+                entries.append(sb.name)
+        return entries
 
     def is_dir(self, path):
         sb = self.stat(path)
@@ -156,8 +247,12 @@ class ftp_client(object):
         return False
 
     def make_dirs(self, path):
-        self.session.makedirs(path)
-        self.clear_stat_cache(os.path.dirname(path))
+        if not self.exists(path):
+            # make parent dir first
+            self.make_dirs(os.path.dirname(path))
+            self.session.mkd(path)
+            # invalidate stat cache
+            self.clear_stat_cache(os.path.dirname(path))
 
     def exists(self, path):
         try:
@@ -170,9 +265,16 @@ class ftp_client(object):
 
     def clear_stat_cache(self, path=None):
         if(path):
-            self.session.stat_cache.invalidate(path)
+            if path in self.meta_cache:
+                # directory
+                del self.meta_cache[path]
+            else:
+                # file
+                parent = os.path.dirname(path)
+                if parent in self.meta_cache:
+                    del self.meta_cache[parent]
         else:
-            self.session.stat_cache.clear()
+            self.meta_cache.clear()
 
     def read(self, path, offset, size):
         logger.info(
@@ -181,12 +283,15 @@ class ftp_client(object):
         )
         buf = None
         try:
-            logger.info("read: opening a file - %s" % path)
+            buf = BytesIO()
 
-            with self.session.open(path, "rb", rest=offset) as f:
-                logger.info("read: reading size - %d" % size)
-                buf = f.read(size)
-                logger.info("read: read done")
+            logger.info("read: reading size - %d" % size)
+            self.session.retrbinary(
+                "RETR %s" % path,
+                buf.write,
+                rest=offset
+            )
+            logger.info("read: read done")
         except Exception, e:
             logger.error("read: " + traceback.format_exc())
             traceback.print_exc()
@@ -200,10 +305,17 @@ class ftp_client(object):
             "write : %s, off(%d), size(%d)" %
             (path, offset, len(buf)))
         try:
-            with self.session.open(path, 'wb', rest=offset) as f:
-                logger.info("write: writing buffer %d" % len(buf))
-                f.write(buf)
-                logger.info("write: writing done")
+            logger.info("write: writing buffer %d" % len(buf))
+
+            bio = BytesIO()
+            bio.write(buf)
+            bio.seek(0)
+            self.session.storbinary(
+                "STOR %s" % path,
+                bio,
+                rest=offset
+            )
+            logger.info("write: writing done")
         except Exception, e:
             logger.error("write: " + traceback.format_exc())
             traceback.print_exc()
@@ -220,7 +332,7 @@ class ftp_client(object):
         logger.info("unlink : %s" % path)
         try:
             logger.info("unlink: deleting a file - %s" % path)
-            self.session.unlink(path)
+            self.session.delete(path)
             logger.info("unlink: deleting done")
 
         except Exception, e:

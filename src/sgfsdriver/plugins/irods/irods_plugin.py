@@ -100,11 +100,13 @@ class plugin_impl(abstractfs.afsbase):
         irods_zone = irods_zone.encode('ascii', 'ignore')
 
         logger.info("__init__: initializing irods_client")
-        self.irods = irods_client.irods_client(host=irods_host,
-                                               port=self.irods_config["port"],
-                                               user=user,
-                                               password=password,
-                                               zone=irods_zone)
+        self.irods = irods_client.irods_client(
+            host=irods_host,
+            port=self.irods_config["port"],
+            user=user,
+            password=password,
+            zone=irods_zone
+        )
 
         self.notification_cb = None
         # create a re-entrant lock (not a read lock)
@@ -183,13 +185,15 @@ class plugin_impl(abstractfs.afsbase):
             # get stat
             sb = self.irods.stat(irods_path)
             if sb:
-                return abstractfs.afsstat(directory=sb.directory,
-                                          path=driver_path,
-                                          name=os.path.basename(driver_path),
-                                          size=sb.size,
-                                          checksum=sb.checksum,
-                                          create_time=sb.create_time,
-                                          modify_time=sb.modify_time)
+                return abstractfs.afsstat(
+                    directory=sb.directory,
+                    path=driver_path,
+                    name=os.path.basename(driver_path),
+                    size=sb.size,
+                    checksum=sb.checksum,
+                    create_time=sb.create_time,
+                    modify_time=sb.modify_time
+                )
             else:
                 return None
 

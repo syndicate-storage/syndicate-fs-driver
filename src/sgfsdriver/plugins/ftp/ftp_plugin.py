@@ -97,10 +97,12 @@ class plugin_impl(abstractfs.afsbase):
         ftp_host = ftp_host.encode('ascii', 'ignore')
 
         logger.info("__init__: initializing ftp_client")
-        self.ftp = ftp_client.ftp_client(host=ftp_host,
-                                         port=self.ftp_config["port"],
-                                         user=user,
-                                         password=password)
+        self.ftp = ftp_client.ftp_client(
+            host=ftp_host,
+            port=self.ftp_config["port"],
+            user=user,
+            password=password
+        )
 
         self.notification_cb = None
         # create a re-entrant lock (not a read lock)
@@ -179,13 +181,18 @@ class plugin_impl(abstractfs.afsbase):
             # get stat
             sb = self.ftp.stat(ftp_path)
             if sb:
-                return abstractfs.afsstat(directory=sb.directory,
-                                          path=driver_path,
-                                          name=os.path.basename(driver_path),
-                                          size=sb.size,
-                                          checksum=sb.checksum,
-                                          create_time=sb.create_time,
-                                          modify_time=sb.modify_time)
+                if sb.modify_time > 0 and sb.create_time == 0:
+                    sb.create_time = sb.modify_time
+
+                return abstractfs.afsstat(
+                    directory=sb.directory,
+                    symlink=sb.symlink,
+                    path=driver_path,
+                    name=os.path.basename(driver_path),
+                    size=sb.size,
+                    create_time=sb.create_time,
+                    modify_time=sb.modify_time
+                )
             else:
                 return None
 

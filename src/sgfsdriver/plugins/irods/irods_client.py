@@ -65,19 +65,23 @@ class irods_status(object):
 
     @classmethod
     def fromCollection(cls, col):
-        return irods_status(directory=True,
-                            path=col.path,
-                            name=col.name)
+        return irods_status(
+            directory=True,
+            path=col.path,
+            name=col.name
+        )
 
     @classmethod
     def fromDataObject(cls, obj):
-        return irods_status(directory=False,
-                            path=obj.path,
-                            name=obj.name,
-                            size=obj.size,
-                            checksum=obj.checksum,
-                            create_time=obj.create_time,
-                            modify_time=obj.modify_time)
+        return irods_status(
+            directory=False,
+            path=obj.path,
+            name=obj.name,
+            size=obj.size,
+            checksum=obj.checksum,
+            create_time=obj.create_time,
+            modify_time=obj.modify_time
+        )
 
     def __eq__(self, other):
         return self.__dict__ == other.__dict__
@@ -109,15 +113,19 @@ class irods_client(object):
         self.session = None
 
         # init cache
-        self.meta_cache = ExpiringDict(max_len=METADATA_CACHE_SIZE,
-                                       max_age_seconds=METADATA_CACHE_TTL)
+        self.meta_cache = ExpiringDict(
+            max_len=METADATA_CACHE_SIZE,
+            max_age_seconds=METADATA_CACHE_TTL
+        )
 
     def connect(self):
-        self.session = iRODSSession(host=self.host,
-                                    port=self.port,
-                                    user=self.user,
-                                    password=self.password,
-                                    zone=self.zone)
+        self.session = iRODSSession(
+            host=self.host,
+            port=self.port,
+            user=self.user,
+            password=self.password,
+            zone=self.zone
+        )
 
     def close(self):
         self.session.cleanup()
