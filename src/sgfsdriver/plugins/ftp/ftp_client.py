@@ -215,6 +215,40 @@ class ftp_client(object):
         self.meta_cache[path] = stats
         return stats
 
+    def _readRange(self, path, offset, size):
+        logger.info(
+            "_readRange : %s, off(%d), size(%d)" %
+            (path, offset, size)
+        )
+        
+        try:
+            buf = BytesIO()
+            total_read = 0
+
+            try:
+                self.session.voidcmd("TYPE I")
+                conn = self.session.transfercmd("RETR %s" % path, offset)
+
+                while total_read < size:
+                    data = conn.recv(size - total_read)
+                    if data:
+                        buf.write(data)
+                        total_read += len(data)
+                    else:
+                        break
+
+                conn.close()
+                self.session.voidresp()
+            except ftplib.error_temp:
+                # abortion of transfer causes this type of error
+                pass
+
+            bybuf = buf.getvalue()
+            return bybuf
+        except Exception, e:
+            traceback.print_exc()
+            raise e
+
     """
     Returns ftp_status
     """
@@ -286,14 +320,7 @@ class ftp_client(object):
         )
         buf = None
         try:
-            buf = BytesIO()
-
-            logger.info("read: reading size - %d" % size)
-            self.session.retrbinary(
-                "RETR %s" % path,
-                buf.write,
-                rest=offset
-            )
+            buf = self._readRange(path, offset, size)
             logger.info("read: read done")
         except Exception, e:
             logger.error("read: " + traceback.format_exc())
