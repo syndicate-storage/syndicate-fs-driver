@@ -19,17 +19,15 @@
 import traceback
 import os
 import logging
+import tempfile
+import dropbox
 
-from irods.session import iRODSSession
-from irods.models import DataObject
-from irods.meta import iRODSMeta
-from irods.exception import CollectionDoesNotExist, DataObjectDoesNotExist
 from expiringdict import ExpiringDict
 
-logger = logging.getLogger('irods_client')
+logger = logging.getLogger('dropbox_client')
 logger.setLevel(logging.DEBUG)
 # create file handler which logs even debug messages
-fh = logging.FileHandler('irods_client.log')
+fh = logging.FileHandler('dropbox_client.log')
 fh.setLevel(logging.DEBUG)
 # create formatter and add it to the handlers
 formatter = logging.Formatter(
@@ -42,11 +40,11 @@ METADATA_CACHE_SIZE = 10000
 METADATA_CACHE_TTL = 60     # 60 sec
 
 """
-Interface class to iRODS
+Interface class to Dropbox
 """
 
 
-class irods_status(object):
+class dropbox_status(object):
     def __init__(self,
                  directory=False,
                  path=None,
@@ -64,20 +62,19 @@ class irods_status(object):
         self.modify_time = modify_time
 
     @classmethod
-    def fromCollection(cls, col):
-        return irods_status(directory=True,
-                            path=col.path,
+    def fromFolder(cls, col):
+        return dropbox_status(directory=True,
+                            path=col.path_display,
                             name=col.name)
 
     @classmethod
-    def fromDataObject(cls, obj):
-        return irods_status(directory=False,
-                            path=obj.path,
+    def fromFile(cls, obj):
+        return dropbox_status(directory=False,
+                            path=obj.path_display,
                             name=obj.name,
                             size=obj.size,
-                            checksum=obj.checksum,
-                            create_time=obj.create_time,
-                            modify_time=obj.modify_time)
+                            checksum=obj.content_hash,
+                            modify_time=obj.server_modified)
 
     def __eq__(self, other):
         return self.__dict__ == other.__dict__
@@ -87,40 +84,52 @@ class irods_status(object):
         if self.directory:
             rep_d = "D"
 
-        return "<irods_status %s %s %d %s>" % \
+        return "<dropbox_status %s %s %d %s>" % \
             (rep_d, self.name, self.size, self.checksum)
 
 
-class irods_client(object):
+def download_file(path, f):
+                    _, res = dbx.files_download(path)
+                    f.write(res.content)
+                    f.flush()
+                    f.seek(0)
+
+def upload_file(dbx, f, path):
+                # https://stackoverflow.com/questions/37397966/dropbox-api-v2-upload-large-files-using-python
+                file_size = os.fstat(f.fileno()).st_size
+                CHUNK_SIZE = 4 * 1024 * 1024
+                if file_size <= CHUNK_SIZE:
+                    dbx.files_upload(f, path)
+                else:
+                    upload_session_start_result = dbx.files_upload_session_start(f.read(CHUNK_SIZE))
+                    cursor = dropbox.files.UploadSessionCursor(session_id=upload_session_start_result.session_id,
+                                               offset=f.tell())
+                    commit = dropbox.files.CommitInfo(path=path)
+                while f.tell() < file_size:
+                    if ((file_size - f.tell()) <= CHUNK_SIZE):
+                        dbx.files_upload_session_finish(f.read(CHUNK_SIZE),
+                                            cursor,
+                                            commit)
+                    else:
+                        dbx.files_upload_session_append(f.read(CHUNK_SIZE),
+                                            cursor.session_id,
+                                            cursor.offset)
+                        cursor.offset = f.tell()                
+
+class dropbox_client(object):
     def __init__(self,
-                 host=None,
-                 port=1247,
-                 user=None,
-                 password=None,
-                 zone=None):
-        self.host = host
-        if port:
-            self.port = port
-        else:
-            self.port = 1247
-        self.user = user
-        self.password = password
-        self.zone = zone
-        self.session = None
+                 access_token=None):
+        self.access_token = access_token
 
         # init cache
         self.meta_cache = ExpiringDict(max_len=METADATA_CACHE_SIZE,
                                        max_age_seconds=METADATA_CACHE_TTL)
 
     def connect(self):
-        self.session = iRODSSession(host=self.host,
-                                    port=self.port,
-                                    user=self.user,
-                                    password=self.password,
-                                    zone=self.zone)
+        self.dbx = dropbox.Dropbox(self.access_token)
 
     def close(self):
-        self.session.cleanup()
+        self.dbx = None
 
     def reconnect(self):
         self.close()
@@ -138,19 +147,25 @@ class irods_client(object):
         if path in self.meta_cache:
             return self.meta_cache[path]
 
-        coll = self.session.collections.get(path)
+        coll = self.dbx.files_list_folder(path)
         stats = []
-        for col in coll.subcollections:
-            stats.append(irods_status.fromCollection(col))
-
-        for obj in coll.data_objects:
-            stats.append(irods_status.fromDataObject(obj))
+        while True:
+            for col in coll.entries:
+                if type(col) is dropbox.files.FileMetadata:
+                    stats.append(dropbox_status.fromFile(col))
+                elif type(col) is dropbox.files.FolderMetadata:
+                    stats.append(dropbox_status.fromFolder(col))
+                else:
+                    pass
+            if not coll.has_more:
+                break
+            coll = self.dbx.files_list_folder_continue(coll.cursor)
 
         self.meta_cache[path] = stats
         return stats
 
     """
-    Returns irods_status
+    Returns dropbox_status
     """
     def stat(self, path):
         try:
@@ -162,15 +177,15 @@ class irods_client(object):
                     if sb.path == path:
                         return sb
             return None
-        except (CollectionDoesNotExist):
+        except (dropbox.files.ListFolderError):
             # fall if cannot access the parent dir
             try:
                 # we only need to check the case if the path is a collection
                 # because if it is a file, it's parent dir must be accessible
                 # thus, _ensureDirEntryStatLoaded should succeed.
-                return irods_status.fromCollection(
-                    self.session.collections.get(path))
-            except (CollectionDoesNotExist):
+                return dropbox_status.fromFolder(
+                    self.dbx.files_get_metadata(path))
+            except (dropbox.exception.ApiError):
                 return None
 
     """
@@ -194,17 +209,14 @@ class irods_client(object):
         if not self.exists(path):
             # make parent dir first
             self.make_dirs(os.path.dirname(path))
-            self.session.collections.create(path)
+            self.dbx.files_create_folder(path)
             # invalidate stat cache
             self.clear_stat_cache(os.path.dirname(path))
 
     def exists(self, path):
-        try:
             sb = self.stat(path)
             if sb:
                 return True
-            return False
-        except (CollectionDoesNotExist, DataObjectDoesNotExist):
             return False
 
     def clear_stat_cache(self, path=None):
@@ -227,8 +239,9 @@ class irods_client(object):
         buf = None
         try:
             logger.info("read: opening a file - %s" % path)
-            obj = self.session.data_objects.get(path)
-            with obj.open('r') as f:
+            md, res = self.dbx.session.files_download(path)
+            data = res.content
+            with open(data) as f:
                 if offset != 0:
                     logger.info("read: seeking at %d" % offset)
                     new_offset = f.seek(offset)
@@ -259,30 +272,32 @@ class irods_client(object):
             "write : %s, off(%d), size(%d)" %
             (path, offset, len(buf)))
         try:
-            obj = None
-            if self.exists(path):
-                logger.info("write: opening a file - %s" % path)
-                obj = self.session.data_objects.get(path)
-            else:
-                logger.info("write: creating a file - %s" % path)
-                obj = self.session.data_objects.create(path)
-            with obj.open('w') as f:
+            with tempfile.TemporaryFile() as f:
+                if self.exists(path):
+                    logger.info("write: opening a file - %s" % path)
+                    download_file(path, f)
+                else:
+                    logger.info("write: creating a file - %s" % path)
+
                 if offset != 0:
-                    logger.info("write: seeking at %d" % offset)
-                    new_offset = f.seek(offset)
-                    if new_offset != offset:
-                        logger.error(
-                            "write: offset mismatch - requested(%d), "
-                            "but returned(%d)" %
-                            (offset, new_offset))
-                        raise Exception(
-                            "write: offset mismatch - requested(%d), "
-                            "but returned(%d)" %
-                            (offset, new_offset))
+                     logger.info("write: seeking at %d" % offset)
+                     new_offset = f.seek(offset)
+                     if new_offset != offset:
+                         logger.error(
+                             "write: offset mismatch - requested(%d), "
+                             "but returned(%d)" %
+                             (offset, new_offset))
+                         raise Exception(
+                             "write: offset mismatch - requested(%d), "
+                             "but returned(%d)" %
+                             (offset, new_offset))
 
                 logger.info("write: writing buffer %d" % len(buf))
                 f.write(buf)
+                f.flush()
+                f.seek(0)
                 logger.info("write: writing done")
+                upload_file(self.dbx, f, path)
 
         except Exception, e:
             logger.error("write: " + traceback.format_exc())
@@ -295,10 +310,15 @@ class irods_client(object):
     def truncate(self, path, size):
         logger.info("truncate : %s" % path)
         try:
-            logger.info("truncate: truncating a file - %s" % path)
-            self.session.data_objects.truncate(path, size)
-            logger.info("truncate: truncating done")
-
+            with tempfile.TemporaryFile() as f:
+                if self.exists(path):
+                    logger.info("truncate: opening a file - %s" % path)
+                    download_file(path, f)
+                else:
+                    logger.info("truncate: creating a file - %s" % path)
+                f.truncate(size) # what should be done if size overflow
+                f.flush()
+                upload_file(self.dbx, f, path)
         except Exception, e:
             logger.error("truncate: " + traceback.format_exc())
             traceback.print_exc()
@@ -311,7 +331,7 @@ class irods_client(object):
         logger.info("unlink : %s" % path)
         try:
             logger.info("unlink: deleting a file - %s" % path)
-            self.session.data_objects.unlink(path)
+            self.dbx.files_delete(path)
             logger.info("unlink: deleting done")
 
         except Exception, e:
@@ -326,7 +346,7 @@ class irods_client(object):
         logger.info("rename : %s -> %s" % (path1, path2))
         try:
             logger.info("rename: renaming a file - %s to %s" % (path1, path2))
-            self.session.data_objects.move(path1, path2)
+            self.dbx.files_move(path1, path2)
             logger.info("rename: renaming done")
 
         except Exception, e:
@@ -338,6 +358,7 @@ class irods_client(object):
         self.clear_stat_cache(path1)
         self.clear_stat_cache(path2)
 
+'''
     def set_xattr(self, path, key, value):
         logger.info("set_xattr : %s - %s" % (key, value))
         try:
@@ -391,22 +412,4 @@ class irods_client(object):
             raise e
 
         return keys
-
-    def download(self, path, to):
-        obj = self.session.data_objects.get(path)
-        with obj.open('r') as f:
-            try:
-                with open(to, 'w') as wf:
-                    while(True):
-                        buf = f.read(1024*1024)
-
-                        if not buf:
-                            break
-
-                        wf.write(buf)
-            except Exception, e:
-                logger.error("download: " + traceback.format_exc())
-                traceback.print_exc()
-                raise e
-
-        return to
+'''
