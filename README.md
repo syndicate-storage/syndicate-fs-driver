@@ -15,8 +15,11 @@ Supported plugins
 =================
 
 Following plugins are supported currently:
-- datastore - Cyverse Datastore
-- irods - iRODS
-- local - Linux Local Filesystem
-- ftp - FTP server
-- s3 - Amazon S3
+
+| **Name** | **Backend Storage** | **AG Support** | **RG Support** |
+| -------------| ----------- | ----------- | ----------- |
+| `datastore` | Cyverse Datastore | O (Auto Re-sync at Dataset Updates) | O (File & Block Replication Mode) |
+| `irods` | iRODS | O | O (File & Block Replication Mode) |
+| `local` | Linux Local Filesystem | O (Auto Re-sync at Dataset Updates) | O (File & Block Replication Mode) |
+| `ftp` | FTP Server | O | O (Block Replication Mode) |
+| `s3` | Amazon S3 | O | O (Block Replication Mode) |
