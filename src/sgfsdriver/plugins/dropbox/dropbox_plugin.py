@@ -69,7 +69,7 @@ class plugin_impl(abstractfs.afsbase):
             raise ValueError("secrets are not given correctly")
 
         access_token = secrets.get("access_token")
-        access_token = user.encode('ascii', 'ignore')
+        access_token = access_token.encode('ascii', 'ignore')
         if not access_token:
             raise ValueError("user is not given correctly")
 
@@ -312,5 +312,6 @@ class plugin_impl(abstractfs.afsbase):
 
     def get_supported_replication_mode(self):
         return [
-            abstractfs.afsreplicationmode.BLOCK
+            #abstractfs.afsreplicationmode.BLOCK
+            abstractfs.afsreplicationmode.FILE
         ]
