@@ -188,7 +188,7 @@ class dropbox_client(object):
                         return sb
 	    logger.info("stat - 6")
             return None
-        except (dropbox.exception.ApiError):
+        except (dropbox.exceptions.ApiError):
             # fall if cannot access the parent dir
             try:
                 # we only need to check the case if the path is a collection
@@ -197,7 +197,7 @@ class dropbox_client(object):
 		logger.info("stat - 7")
                 return dropbox_status.fromFolder(
                     self.dbx.files_get_metadata(path))
-            except (dropbox.exception.ApiError):
+            except (dropbox.exceptions.ApiError):
                 return None
 
     """
