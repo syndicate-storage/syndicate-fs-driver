@@ -118,18 +118,33 @@ class plugin_impl(abstractfs.afsbase):
                         self.notification_cb([entry], [], [])
 
     def _make_dropbox_path(self, path):
+        logger.info("_make_dropbox_path: %s" % path)
         if path.startswith(self.work_root):
-            return path.rstrip("/")
+            temp = path.rstrip("/")
+            if temp == '/':
+                return ''
+            else:
+                return temp
 
         if path.startswith("/"):
-            return self.work_root.rstripg("/") + path.rstrip("/")
+	     temp = self.work_root.rstrip("/") + path.rstrip("/")
+             if temp == '/':
+                 return ''
+             else:
+                 return temp
 
-        return self.work_root.rstrip("/") + "/" + path.rstrip("/")
+        temp = self.work_root.rstrip("/") + "/" + path.rstrip("/")
+
+	if temp == '/':
+             return ''
+
+        return temp
 
     def _make_driver_path(self, path):
+        logger.info("_make_driver_path: %s" % path)
         if path.startswith(self.work_root):
-            return path[len(self.work_root):].rstrip("/").lstrip("/")
-        return path.rstrip("/").lstrip("/")
+            return path[len(self.work_root):].rstrip("/")
+        return path.rstrip("/")
 
     def connect(self):
         logger.info("connect: connecting to Dropbox")
@@ -172,9 +187,13 @@ class plugin_impl(abstractfs.afsbase):
         logger.info("exists - %s" % path)
 
         with self._get_lock():
+            logger.info("exists - 1")
             ascii_path = path.encode('ascii', 'ignore')
+            logger.info("exists - 2")
             dropbox_path = self._make_dropbox_path(ascii_path)
+            logger.info("exists - 3")
             exist = self.dropbox.exists(dropbox_path)
+            logger.info("exists - 4")
             return exist
 
     @reconnectAtDropboxFail

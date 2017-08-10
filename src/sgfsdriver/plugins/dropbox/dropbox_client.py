@@ -42,7 +42,11 @@ METADATA_CACHE_TTL = 60     # 60 sec
 """
 Interface class to Dropbox
 """
-
+def dropbox_dirname(path):
+    parent = os.path.dirname(path)
+    if parent == '/':
+        return ''
+    return parent
 
 class dropbox_status(object):
     def __init__(self,
@@ -170,19 +174,27 @@ class dropbox_client(object):
     def stat(self, path):
         try:
             # try bulk loading of stats
-            parent = os.path.dirname(path)
+            logger.info("stat - 1")
+            #parent = os.path.dirname(path)
+            parent = dropbox_dirname(path)
+            logger.info("stat - 2")
             stats = self._ensureDirEntryStatLoaded(parent)
+            logger.info("stat - 3")
             if stats:
+                logger.info("stat - 4")
                 for sb in stats:
                     if sb.path == path:
+                        logger.info("stat - 5")
                         return sb
+	    logger.info("stat - 6")
             return None
-        except (dropbox.files.ListFolderError):
+        except (dropbox.exception.ApiError):
             # fall if cannot access the parent dir
             try:
                 # we only need to check the case if the path is a collection
                 # because if it is a file, it's parent dir must be accessible
                 # thus, _ensureDirEntryStatLoaded should succeed.
+		logger.info("stat - 7")
                 return dropbox_status.fromFolder(
                     self.dbx.files_get_metadata(path))
             except (dropbox.exception.ApiError):
@@ -206,15 +218,26 @@ class dropbox_client(object):
         return False
 
     def make_dirs(self, path):
+	logger.info("make_dirs: path %s" % path)
         if not self.exists(path):
             # make parent dir first
-            self.make_dirs(os.path.dirname(path))
+            logger.info("make_dirs - 1")
+            #self.make_dirs(os.path.dirname(path))
+            self.make_dirs(dropbox_dirname(path))
+            logger.info("make_dirs - 2")
             self.dbx.files_create_folder(path)
+            logger.info("make_dirs - 3")
             # invalidate stat cache
-            self.clear_stat_cache(os.path.dirname(path))
+            #self.clear_stat_cache(os.path.dirname(path))
+            self.clear_stat_cache(dropbox_dirname(path))
+            logger.info("make_dirs - 4")
 
     def exists(self, path):
+	    if path == '':
+                return True
+            logger.info("exists - 1")
             sb = self.stat(path)
+            logger.info("exists - 2")
             if sb:
                 return True
             return False
@@ -226,7 +249,8 @@ class dropbox_client(object):
                 del self.meta_cache[path]
             else:
                 # file
-                parent = os.path.dirname(path)
+                #parent = os.path.dirname(path)
+                parent = dropbox_dirname(path)
                 if parent in self.meta_cache:
                     del self.meta_cache[parent]
         else:
