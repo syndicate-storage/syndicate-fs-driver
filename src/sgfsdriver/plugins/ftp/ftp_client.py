@@ -41,6 +41,8 @@ logger.addHandler(fh)
 METADATA_CACHE_SIZE = 10000
 METADATA_CACHE_TTL = 60     # 60 sec
 
+FTP_TIMEOUT = 30    # 30 sec
+
 """
 Interface class to FTP
 """
@@ -102,6 +104,7 @@ class ftp_client(object):
             self.password = "anonymous@email.com"
 
         self.session = None
+        self.last_comm = None
 
         # init cache
         self.meta_cache = ExpiringDict(
@@ -113,10 +116,12 @@ class ftp_client(object):
         self.session = ftplib.FTP()
         self.session.connect(self.host, self.port)
         self.session.login(self.user, self.password)
+        self.last_comm = datetime.now()
 
     def close(self):
         try:
             self.session.quit()
+            self.last_comm = None
         except:
             pass
 
@@ -194,16 +199,34 @@ class ftp_client(object):
         else:
             return None
 
+    def _reconnect_when_needed(self):
+        expired = True
+        if self.last_comm:
+            delta = datetime.now() - self.last_comm
+            if delta.total_seconds() < FTP_TIMEOUT:
+                expired = False
+
+        if expired:
+            # perform a short command then reconnect at fail
+            try:
+                self.session.pwd()
+                self.last_comm = datetime.now()
+            except:
+                self.reconnect()
+
     def _ensureDirEntryStatLoaded(self, path):
         # reuse cache
         if path in self.meta_cache:
             return self.meta_cache[path]
 
+        self._reconnect_when_needed()
+        self.session.cwd(path)
+
         stats = []
         try:
             entries = []
-            self.session.cwd(path)
             self.session.retrlines("MLSD", entries.append)
+            self.last_comm = datetime.now()
             for ent in entries:
                 st = self._parse_MLSD(path, ent)
                 if st:
@@ -220,34 +243,32 @@ class ftp_client(object):
             "_readRange : %s, off(%d), size(%d)" %
             (path, offset, size)
         )
+
+        self._reconnect_when_needed()
+        self.session.voidcmd("TYPE I")
         
+        buf = BytesIO()
+        total_read = 0
+
         try:
-            buf = BytesIO()
-            total_read = 0
+            conn = self.session.transfercmd("RETR %s" % path, offset)
+            self.last_comm = datetime.now()
+            while total_read < size:
+                data = conn.recv(size - total_read)
+                if data:
+                    buf.write(data)
+                    total_read += len(data)
+                else:
+                    break
 
-            try:
-                self.session.voidcmd("TYPE I")
-                conn = self.session.transfercmd("RETR %s" % path, offset)
+            conn.close()
+            self.session.voidresp()
+        except ftplib.error_temp:
+            # abortion of transfer causes this type of error
+            pass
 
-                while total_read < size:
-                    data = conn.recv(size - total_read)
-                    if data:
-                        buf.write(data)
-                        total_read += len(data)
-                    else:
-                        break
-
-                conn.close()
-                self.session.voidresp()
-            except ftplib.error_temp:
-                # abortion of transfer causes this type of error
-                pass
-
-            bybuf = buf.getvalue()
-            return bybuf
-        except Exception, e:
-            traceback.print_exc()
-            raise e
+        bybuf = buf.getvalue()
+        return bybuf
 
     """
     Returns ftp_status
@@ -286,8 +307,10 @@ class ftp_client(object):
     def make_dirs(self, path):
         if not self.exists(path):
             # make parent dir first
+            self._reconnect_when_needed()
             self.make_dirs(os.path.dirname(path))
             self.session.mkd(path)
+            self.last_comm = datetime.now()
             # invalidate stat cache
             self.clear_stat_cache(os.path.dirname(path))
 
@@ -340,11 +363,13 @@ class ftp_client(object):
             bio = BytesIO()
             bio.write(buf)
             bio.seek(0)
+            self._reconnect_when_needed()
             self.session.storbinary(
                 "STOR %s" % path,
                 bio,
                 rest=offset
             )
+            self.last_comm = datetime.now()
             logger.info("write: writing done")
         except Exception, e:
             logger.error("write: " + traceback.format_exc())
@@ -362,7 +387,9 @@ class ftp_client(object):
         logger.info("unlink : %s" % path)
         try:
             logger.info("unlink: deleting a file - %s" % path)
+            self._reconnect_when_needed()
             self.session.delete(path)
+            self.last_comm = datetime.now()
             logger.info("unlink: deleting done")
 
         except Exception, e:
@@ -377,7 +404,9 @@ class ftp_client(object):
         logger.info("rename : %s -> %s" % (path1, path2))
         try:
             logger.info("rename: renaming a file - %s to %s" % (path1, path2))
+            self._reconnect_when_needed()
             self.session.rename(path1, path2)
+            self.last_comm = datetime.now()
             logger.info("rename: renaming done")
 
         except Exception, e:
