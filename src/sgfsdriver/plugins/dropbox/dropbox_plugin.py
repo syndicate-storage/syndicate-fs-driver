@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 
 """
-   Copyright 2017 The Trustees of University of North Carolina at Chapel Hill
+   Copyright 2016 The Trustees of University of Arizona, 2017 The Trustees of University of North Carolina at Chapel Hill
 
    Licensed under the Apache License, Version 2.0 (the "License");
    you may not use this file except in compliance with the License.
