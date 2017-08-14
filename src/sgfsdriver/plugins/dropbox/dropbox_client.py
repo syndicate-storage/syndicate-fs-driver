@@ -92,7 +92,7 @@ class dropbox_status(object):
             (rep_d, self.name, self.size, self.checksum)
 
 
-def download_file(path, f):
+def download_file(dbx, path, f):
                     _, res = dbx.files_download(path)
                     f.write(res.content)
                     f.flush()
@@ -103,7 +103,7 @@ def upload_file(dbx, f, path):
                 file_size = os.fstat(f.fileno()).st_size
                 CHUNK_SIZE = 4 * 1024 * 1024
                 if file_size <= CHUNK_SIZE:
-                    dbx.files_upload(f, path)
+                    dbx.files_upload(f.read(), path)
                 else:
                     upload_session_start_result = dbx.files_upload_session_start(f.read(CHUNK_SIZE))
                     cursor = dropbox.files.UploadSessionCursor(session_id=upload_session_start_result.session_id,
@@ -263,25 +263,10 @@ class dropbox_client(object):
         buf = None
         try:
             logger.info("read: opening a file - %s" % path)
-            md, res = self.dbx.session.files_download(path)
+            md, res = self.dbx.files_download(path)
             data = res.content
-            with open(data) as f:
-                if offset != 0:
-                    logger.info("read: seeking at %d" % offset)
-                    new_offset = f.seek(offset)
-                    if new_offset != offset:
-                        logger.error(
-                            "read: offset mismatch - requested(%d), "
-                            "but returned(%d)" %
-                            (offset, new_offset))
-                        raise Exception(
-                            "read: offset mismatch - requested(%d), "
-                            "but returned(%d)" %
-                            (offset, new_offset))
-
-                logger.info("read: reading size - %d" % size)
-                buf = f.read(size)
-                logger.info("read: read done")
+            buf = data[offset : offset+size]
+            logger.info("read: read done")
 
         except Exception, e:
             logger.error("read: " + traceback.format_exc())
@@ -299,7 +284,7 @@ class dropbox_client(object):
             with tempfile.TemporaryFile() as f:
                 if self.exists(path):
                     logger.info("write: opening a file - %s" % path)
-                    download_file(path, f)
+                    download_file(self.dbx, path, f)
                 else:
                     logger.info("write: creating a file - %s" % path)
 
@@ -337,7 +322,7 @@ class dropbox_client(object):
             with tempfile.TemporaryFile() as f:
                 if self.exists(path):
                     logger.info("truncate: opening a file - %s" % path)
-                    download_file(path, f)
+                    download_file(self.dbx, path, f)
                 else:
                     logger.info("truncate: creating a file - %s" % path)
                 f.truncate(size) # what should be done if size overflow
