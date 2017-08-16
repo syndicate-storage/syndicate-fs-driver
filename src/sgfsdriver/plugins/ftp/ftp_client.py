@@ -48,6 +48,10 @@ Interface class to FTP
 """
 
 
+class MLSD_NOT_SUPPORTED(Exception):
+    pass
+
+
 class ftp_status(object):
     def __init__(self,
                  directory=False,
@@ -105,6 +109,7 @@ class ftp_client(object):
 
         self.session = None
         self.last_comm = None
+        self.mlsd_supported = True
 
         # init cache
         self.meta_cache = ExpiringDict(
@@ -199,6 +204,74 @@ class ftp_client(object):
         else:
             return None
 
+    def _parse_LIST(self, parent, line):
+        # drwxr-xr-x    8 20002    2006         4096 Dec 08  2015 NANOGrav_9y
+        fields = line.split()
+        stat_dict = {}
+        stat_dict["perm"] = fields[0]
+        stat_dict["owner"] = fields[2]
+        stat_dict["group"] = fields[3]
+        stat_dict["size"] = fields[4]
+        stat_dict["month"] = fields[5]
+        stat_dict["day"] = fields[6]
+        stat_dict["d3"] = fields[7]
+        stat_dict["name"] = fields[8]
+        
+        full_path = parent.rstrip("/") + "/" + stat_dict["name"]
+
+        directory = False
+        symlink = False
+
+        if stat_dict["perm"].startswith("d"):
+            directory = True
+        elif stat_dict["perm"].startswith("-"):
+            directory = False
+        else:
+            raise IOError("Unknown type : %s" % stat_dict["perm"])
+
+        size = 0
+        if "size" in stat_dict:
+            size = long(stat_dict["size"])
+
+        now = datetime.now()
+        year = now.year
+        hour = 0
+        minute = 0
+
+        if stat_dict["d3"].isdigit():
+            year = int(stat_dict["d3"])
+        else:
+            hm = stat_dict["d3"].split(":")
+            hour = int(hm[0])
+            minute = int(hm[1])
+
+        d = "%d %s %s %d %d" % (
+            year, stat_dict["month"], stat_dict["day"], hour, minute
+        )
+
+        modify_time = None
+        if "modify" in stat_dict:
+            modify_time_obj = datetime.strptime(d, "%Y %b %d %H %M")
+            modify_time = time.mktime(modify_time_obj.timetuple())
+
+        create_time = None
+        if "create" in stat_dict:
+            create_time_obj = datetime.strptime(d, "%Y %b %d %H %M")
+            create_time = time.mktime(create_time_obj.timetuple())
+
+        if "name" in stat_dict:
+            return ftp_status(
+                directory=directory,
+                symlink=symlink,
+                path=full_path,
+                name=stat_dict["name"],
+                size=size,
+                create_time=create_time,
+                modify_time=modify_time
+            )
+        else:
+            return None
+
     def _reconnect_when_needed(self):
         expired = True
         if self.last_comm:
@@ -214,6 +287,57 @@ class ftp_client(object):
             except:
                 self.reconnect()
 
+    def _list_dir_and_stat_MLSD(self, path):
+        stats = []
+        try:
+            entries = []
+            try:
+                self.session.retrlines("MLSD", entries.append)
+            except ftplib.error_perm, e:
+                msg = str(e)
+                if "500" in msg or "unknown command" in msg.lower():
+                    raise MLSD_NOT_SUPPORTED("MLSD is not supported")
+
+            self.last_comm = datetime.now()
+            for ent in entries:
+                st = self._parse_MLSD(path, ent)
+                if st:
+                    stats.append(st)
+        except ftplib.error_perm:
+            logger.error("_list_dir_and_stat_MLSD: " + traceback.format_exc())
+            traceback.print_exc()
+
+        return stats
+
+    def _list_dir_and_stat_LIST(self, path):
+        stats = []
+        try:
+            entries = []
+            self.session.retrlines("LIST", entries.append)
+            self.last_comm = datetime.now()
+            for ent in entries:
+                st = self._parse_LIST(path, ent)
+                if st:
+                    stats.append(st)
+        except ftplib.error_perm:
+            logger.error("_list_dir_and_stat_LIST: " + traceback.format_exc())
+            traceback.print_exc()
+
+        return stats
+
+    def _list_dir_and_stat(self, path):
+        stats = []
+        if self.mlsd_supported:
+            try:
+                stats = self._list_dir_and_stat_MLSD(path)
+            except MLSD_NOT_SUPPORTED:
+                self.mlsd_supported = False
+                stats = self._list_dir_and_stat_LIST(path)
+        else:
+            stats = self._list_dir_and_stat_LIST(path)
+
+        return stats
+
     def _ensureDirEntryStatLoaded(self, path):
         # reuse cache
         if path in self.meta_cache:
@@ -222,19 +346,7 @@ class ftp_client(object):
         self._reconnect_when_needed()
         self.session.cwd(path)
 
-        stats = []
-        try:
-            entries = []
-            self.session.retrlines("MLSD", entries.append)
-            self.last_comm = datetime.now()
-            for ent in entries:
-                st = self._parse_MLSD(path, ent)
-                if st:
-                    stats.append(st)
-        except ftplib.error_perm:
-            logger.error("_ensureDirEntryStatLoaded: " + traceback.format_exc())
-            traceback.print_exc()
-
+        stats = self._list_dir_and_stat(path)
         self.meta_cache[path] = stats
         return stats
 
