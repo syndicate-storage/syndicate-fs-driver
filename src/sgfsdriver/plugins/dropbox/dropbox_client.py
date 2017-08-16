@@ -42,11 +42,14 @@ METADATA_CACHE_TTL = 60     # 60 sec
 """
 Interface class to Dropbox
 """
+
+
 def dropbox_dirname(path):
     parent = os.path.dirname(path)
     if parent == '/':
         return ''
     return parent
+
 
 class dropbox_status(object):
     def __init__(self,
@@ -67,18 +70,22 @@ class dropbox_status(object):
 
     @classmethod
     def fromFolder(cls, col):
-        return dropbox_status(directory=True,
-                            path=col.path_display,
-                            name=col.name)
+        return dropbox_status(
+            directory=True,
+            path=col.path_display,
+            name=col.name
+        )
 
     @classmethod
     def fromFile(cls, obj):
-        return dropbox_status(directory=False,
-                            path=obj.path_display,
-                            name=obj.name,
-                            size=obj.size,
-                            checksum=obj.content_hash,
-                            modify_time=obj.server_modified)
+        return dropbox_status(
+            directory=False,
+            path=obj.path_display,
+            name=obj.name,
+            size=obj.size,
+            checksum=obj.content_hash,
+            modify_time=obj.server_modified
+        )
 
     def __eq__(self, other):
         return self.__dict__ == other.__dict__
@@ -93,41 +100,54 @@ class dropbox_status(object):
 
 
 def download_file(dbx, path, f):
-                    _, res = dbx.files_download(path)
-                    f.write(res.content)
-                    f.flush()
-                    f.seek(0)
+    _, res = dbx.files_download(path)
+    f.write(res.content)
+    f.flush()
+    f.seek(0)
+
 
 def upload_file(dbx, f, path):
-                # https://stackoverflow.com/questions/37397966/dropbox-api-v2-upload-large-files-using-python
-                file_size = os.fstat(f.fileno()).st_size
-                CHUNK_SIZE = 4 * 1024 * 1024
-                if file_size <= CHUNK_SIZE:
-                    dbx.files_upload(f.read(), path)
-                else:
-                    upload_session_start_result = dbx.files_upload_session_start(f.read(CHUNK_SIZE))
-                    cursor = dropbox.files.UploadSessionCursor(session_id=upload_session_start_result.session_id,
-                                               offset=f.tell())
-                    commit = dropbox.files.CommitInfo(path=path)
-                while f.tell() < file_size:
-                    if ((file_size - f.tell()) <= CHUNK_SIZE):
-                        dbx.files_upload_session_finish(f.read(CHUNK_SIZE),
-                                            cursor,
-                                            commit)
-                    else:
-                        dbx.files_upload_session_append(f.read(CHUNK_SIZE),
-                                            cursor.session_id,
-                                            cursor.offset)
-                        cursor.offset = f.tell()                
+    # https://stackoverflow.com/questions/37397966/dropbox-api-v2-upload-large-files-using-python
+    file_size = os.fstat(f.fileno()).st_size
+    CHUNK_SIZE = 4 * 1024 * 1024
+    if file_size <= CHUNK_SIZE:
+        dbx.files_upload(f.read(), path)
+    else:
+        upload_session_start_result = dbx.files_upload_session_start(
+            f.read(CHUNK_SIZE)
+        )
+        cursor = dropbox.files.UploadSessionCursor(
+            session_id=upload_session_start_result.session_id,
+            offset=f.tell()
+        )
+        commit = dropbox.files.CommitInfo(path=path)
+
+    while f.tell() < file_size:
+        if ((file_size - f.tell()) <= CHUNK_SIZE):
+            dbx.files_upload_session_finish(
+                f.read(CHUNK_SIZE),
+                cursor,
+                commit
+            )
+        else:
+            dbx.files_upload_session_append(
+                f.read(CHUNK_SIZE),
+                cursor.session_id,
+                cursor.offset
+            )
+            cursor.offset = f.tell()
+
 
 class dropbox_client(object):
     def __init__(self,
                  access_token=None):
         self.access_token = access_token
+        self.dbx = None
 
         # init cache
-        self.meta_cache = ExpiringDict(max_len=METADATA_CACHE_SIZE,
-                                       max_age_seconds=METADATA_CACHE_TTL)
+        self.meta_cache = ExpiringDict(
+            max_len=METADATA_CACHE_SIZE,
+            max_age_seconds=METADATA_CACHE_TTL)
 
     def connect(self):
         self.dbx = dropbox.Dropbox(self.access_token)
@@ -186,7 +206,7 @@ class dropbox_client(object):
                     if sb.path == path:
                         logger.info("stat - 5")
                         return sb
-	    logger.info("stat - 6")
+            logger.info("stat - 6")
             return None
         except (dropbox.exceptions.ApiError):
             # fall if cannot access the parent dir
@@ -194,9 +214,10 @@ class dropbox_client(object):
                 # we only need to check the case if the path is a collection
                 # because if it is a file, it's parent dir must be accessible
                 # thus, _ensureDirEntryStatLoaded should succeed.
-		logger.info("stat - 7")
+                logger.info("stat - 7")
                 return dropbox_status.fromFolder(
-                    self.dbx.files_get_metadata(path))
+                    self.dbx.files_get_metadata(path)
+                )
             except (dropbox.exceptions.ApiError):
                 return None
 
@@ -218,7 +239,7 @@ class dropbox_client(object):
         return False
 
     def make_dirs(self, path):
-	logger.info("make_dirs: path %s" % path)
+        logger.info("make_dirs: path %s" % path)
         if not self.exists(path):
             # make parent dir first
             logger.info("make_dirs - 1")
@@ -233,14 +254,15 @@ class dropbox_client(object):
             logger.info("make_dirs - 4")
 
     def exists(self, path):
-	    if path == '':
-                return True
-            logger.info("exists - 1")
-            sb = self.stat(path)
-            logger.info("exists - 2")
-            if sb:
-                return True
-            return False
+        if path == '':
+            return True
+
+        logger.info("exists - 1")
+        sb = self.stat(path)
+        logger.info("exists - 2")
+        if sb:
+            return True
+        return False
 
     def clear_stat_cache(self, path=None):
         if(path):
@@ -263,9 +285,9 @@ class dropbox_client(object):
         buf = None
         try:
             logger.info("read: opening a file - %s" % path)
-            md, res = self.dbx.files_download(path)
+            _, res = self.dbx.files_download(path)
             data = res.content
-            buf = data[offset : offset+size]
+            buf = data[offset:offset+size]
             logger.info("read: read done")
 
         except Exception, e:
@@ -289,17 +311,19 @@ class dropbox_client(object):
                     logger.info("write: creating a file - %s" % path)
 
                 if offset != 0:
-                     logger.info("write: seeking at %d" % offset)
-                     new_offset = f.seek(offset)
-                     if new_offset != offset:
-                         logger.error(
-                             "write: offset mismatch - requested(%d), "
-                             "but returned(%d)" %
-                             (offset, new_offset))
-                         raise Exception(
-                             "write: offset mismatch - requested(%d), "
-                             "but returned(%d)" %
-                             (offset, new_offset))
+                    logger.info("write: seeking at %d" % offset)
+                    new_offset = f.seek(offset)
+                    if new_offset != offset:
+                        logger.error(
+                            "write: offset mismatch - requested(%d), "
+                            "but returned(%d)" %
+                            (offset, new_offset)
+                        )
+                        raise Exception(
+                            "write: offset mismatch - requested(%d), "
+                            "but returned(%d)" %
+                            (offset, new_offset)
+                        )
 
                 logger.info("write: writing buffer %d" % len(buf))
                 f.write(buf)
@@ -325,7 +349,7 @@ class dropbox_client(object):
                     download_file(self.dbx, path, f)
                 else:
                     logger.info("truncate: creating a file - %s" % path)
-                f.truncate(size) # what should be done if size overflow
+                f.truncate(size)  # what should be done if size overflow
                 f.flush()
                 upload_file(self.dbx, f, path)
         except Exception, e:
@@ -366,59 +390,3 @@ class dropbox_client(object):
         # invalidate stat cache
         self.clear_stat_cache(path1)
         self.clear_stat_cache(path2)
-
-'''
-    def set_xattr(self, path, key, value):
-        logger.info("set_xattr : %s - %s" % (key, value))
-        try:
-            logger.info(
-                "set_xattr: set extended attribute to a file %s %s=%s" %
-                (path, key, value))
-            self.session.metadata.set(DataObject, path, iRODSMeta(key, value))
-            logger.info("set_xattr: done")
-
-        except Exception, e:
-            logger.error("set_xattr: " + traceback.format_exc())
-            traceback.print_exc()
-            raise e
-
-    def get_xattr(self, path, key):
-        logger.info("get_xattr : " + key)
-        value = None
-        try:
-            logger.info(
-                "get_xattr: get extended attribute from a file - %s %s" %
-                (path, key))
-            attrs = self.session.metadata.get(DataObject, path)
-            for attr in attrs:
-                if key == attr.name:
-                    value = attr.value
-                    break
-            logger.info("get_xattr: done")
-
-        except Exception, e:
-            logger.error("get_xattr: " + traceback.format_exc())
-            traceback.print_exc()
-            raise e
-
-        return value
-
-    def list_xattr(self, path):
-        logger.info("list_xattr : %s" % key)
-        keys = []
-        try:
-            logger.info(
-                "list_xattr: get extended attributes from a file - %s" %
-                path)
-            attrs = self.session.metadata.get(DataObject, path)
-            for attr in attrs:
-                keys.append(attr.name)
-            logger.info("list_xattr: done")
-
-        except Exception, e:
-            logger.error("list_xattr: " + traceback.format_exc())
-            traceback.print_exc()
-            raise e
-
-        return keys
-'''

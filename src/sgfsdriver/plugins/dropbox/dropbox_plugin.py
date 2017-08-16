@@ -127,16 +127,15 @@ class plugin_impl(abstractfs.afsbase):
                 return temp
 
         if path.startswith("/"):
-	     temp = self.work_root.rstrip("/") + path.rstrip("/")
-             if temp == '/':
-                 return ''
-             else:
-                 return temp
+            temp = self.work_root.rstrip("/") + path.rstrip("/")
+            if temp == '/':
+                return ''
+            else:
+                return temp
 
         temp = self.work_root.rstrip("/") + "/" + path.rstrip("/")
-
-	if temp == '/':
-             return ''
+        if temp == '/':
+            return ''
 
         return temp
 
@@ -172,13 +171,15 @@ class plugin_impl(abstractfs.afsbase):
             # get stat
             sb = self.dropbox.stat(dropbox_path)
             if sb:
-                return abstractfs.afsstat(directory=sb.directory,
-                                          path=driver_path,
-                                          name=os.path.basename(driver_path),
-                                          size=sb.size,
-                                          checksum=sb.checksum,
-                                          create_time=sb.create_time,
-                                          modify_time=sb.modify_time)
+                return abstractfs.afsstat(
+                    directory=sb.directory,
+                    path=driver_path,
+                    name=os.path.basename(driver_path),
+                    size=sb.size,
+                    checksum=sb.checksum,
+                    create_time=sb.create_time,
+                    modify_time=sb.modify_time
+                )
             else:
                 return None
 
@@ -286,35 +287,6 @@ class plugin_impl(abstractfs.afsbase):
             dropbox_path2 = self._make_dropbox_path(ascii_path2)
             self.dropbox.rename(dropbox_path1, dropbox_path2)
 
-    '''
-    @reconnectAtDropboxFail
-    def set_xattr(self, filepath, key, value):
-        logger.info("set_xattr - %s, %s=%s" % (filepath, key, value))
-
-        with self._get_lock():
-            ascii_path = filepath.encode('ascii', 'ignore')
-            dropbox_path = self._make_dropbox_path(ascii_path)
-            self.dropbox.set_xattr(dropbox_path, key, value)
-
-    @reconnectAtDropboxFail
-    def get_xattr(self, filepath, key):
-        logger.info("get_xattr - %s, %s" % (filepath, key))
-
-        with self._get_lock():
-            ascii_path = filepath.encode('ascii', 'ignore')
-            dropbox_path = self._make_dropbox_path(ascii_path)
-            return self.dropbox.get_xattr(dropbox_path, key)
-
-    @reconnectAtDropboxFail
-    def list_xattr(self, filepath):
-        logger.info("list_xattr - %s" % filepath)
-
-        with self._get_lock():
-            ascii_path = filepath.encode('ascii', 'ignore')
-            dropbox_path = self._make_dropbox_path(ascii_path)
-            return self.dropbox.list_xattr(dropbox_path)
-    '''
-
     def plugin(self):
         return self.__class__
 
@@ -331,6 +303,6 @@ class plugin_impl(abstractfs.afsbase):
 
     def get_supported_replication_mode(self):
         return [
-            #abstractfs.afsreplicationmode.BLOCK
+            abstractfs.afsreplicationmode.BLOCK,
             abstractfs.afsreplicationmode.FILE
         ]

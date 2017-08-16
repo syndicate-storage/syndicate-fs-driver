@@ -37,7 +37,8 @@ dependencies = [
     'pika',
     'python-irodsclient',
     'pyinotify',
-    'expiringdict'
+    'expiringdict',
+    'boto3'
 ]
 
 setup(

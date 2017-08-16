@@ -23,3 +23,4 @@ Following plugins are supported currently:
 | `local` | Linux Local Filesystem | O (Auto Re-sync at Dataset Updates) | O (File & Block Replication Mode) |
 | `ftp` | FTP Server | O | O (Block Replication Mode) |
 | `s3` | Amazon S3 | O | O (Block Replication Mode) |
+| `dropbox` | Dropbox | O | O (File & Block Replication Mode) |
