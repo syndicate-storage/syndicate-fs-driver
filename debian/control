@@ -3,11 +3,10 @@ Section: python
 Priority: optional
 Maintainer: Zack Williams, University of Arizona <zdw@cs.arizona.edu>
 Standards-Version: 3.9.5
-Build-Depends: debhelper (>= 9), python-setuptools, python-all-dev, python-pika, python-pyinotify
+Build-Depends: debhelper (>= 9), python-setuptools, python-all-dev, python-pika, python-pyinotify, python-boto3, python-dropbox
 
 Package: syndicate-fs-driver
 Architecture: all
 Depends: ${misc:Depends}, ${python:Depends}, python-expiringdict, python-irodsclient
 Description: Syndicate filesystem driver
  Syndicate filesystem driver and its plugins
-

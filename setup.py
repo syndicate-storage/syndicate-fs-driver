@@ -38,7 +38,8 @@ dependencies = [
     'python-irodsclient',
     'pyinotify',
     'expiringdict',
-    'boto3'
+    'boto3',
+    'dropbox'
 ]
 
 setup(
