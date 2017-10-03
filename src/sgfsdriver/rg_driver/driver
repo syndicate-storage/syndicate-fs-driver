@@ -209,10 +209,19 @@ def read_chunk(chunk_request, outfile, driver_config, driver_secrets):
         @driver_config is a dict containing the driver's config
         @driver_secrets is a dict containing the driver's unencrypted secrets
     """
-    gateway.log_debug("read_chunk - %d" % chunk_request.request_type)
-
     try:
         if block_replication:
+            path = gateway.request_path(chunk_request)
+            gateway.log_debug(
+                "read_chunk (blk) - type(%d), path(%s), bid(%s), bver(%s)" %
+                (
+                    chunk_request.request_type,
+                    path,
+                    chunk_request.block_id,
+                    chunk_request.block_version
+                )
+            )
+
             file_path = gateway.request_to_storage_path(chunk_request)
 
             # check if the block file exists
@@ -227,6 +236,16 @@ def read_chunk(chunk_request, outfile, driver_config, driver_secrets):
             # file_replication
             if chunk_request.request_type == DriverRequest.BLOCK:
                 path = gateway.request_path(chunk_request)
+                gateway.log_debug(
+                    "read_chunk (file) - type(%d), path(%s), bid(%s), bver(%s)" %
+                    (
+                        chunk_request.request_type,
+                        path,
+                        chunk_request.block_id,
+                        chunk_request.block_version
+                    )
+                )
+
                 file_path = gateway.path_join("/", path)
 
                 repl = _get_replica(
@@ -259,8 +278,19 @@ def read_chunk(chunk_request, outfile, driver_config, driver_secrets):
                     #    bytearray(chunk_request.block_size - len(buf)))
 
             elif chunk_request.request_type == DriverRequest.MANIFEST:
-                path = gateway.request_to_storage_path(chunk_request)
-                file_path = gateway.path_join(MANIFEST_DIR, path)
+                path = gateway.request_path(chunk_request)
+                gateway.log_debug(
+                    "read_chunk (file) - type(%d), path(%s), bid(%s), bver(%s)" %
+                    (
+                        chunk_request.request_type,
+                        path,
+                        chunk_request.block_id,
+                        chunk_request.block_version
+                    )
+                )
+
+                file_path = gateway.request_to_storage_path(chunk_request)
+                file_path = gateway.path_join(MANIFEST_DIR, file_path)
 
                 if not fs.exists(file_path):
                     gateway.log_error("WARN: '%s' does not exist" % file_path)
@@ -276,8 +306,6 @@ def read_chunk(chunk_request, outfile, driver_config, driver_secrets):
 
 
 def write_chunk(chunk_request, chunk_buf, driver_config, driver_secrets):
-    gateway.log_debug("write_chunk - %d" % chunk_request.request_type)
-
     byte_offset = gateway.request_byte_offset(chunk_request)
     byte_len = gateway.request_byte_len(chunk_request)
 
@@ -305,6 +333,18 @@ def write_chunk(chunk_request, chunk_buf, driver_config, driver_secrets):
 
     try:
         if block_replication:
+            path = gateway.request_path(chunk_request)
+            gateway.log_debug(
+                "write_chunk (blk) - type(%d), path(%s), bid(%s), bver(%s), size(%d)" %
+                (
+                    chunk_request.request_type,
+                    path,
+                    chunk_request.block_id,
+                    chunk_request.block_version,
+                    actual_block_size
+                )
+            )
+
             file_path = gateway.request_to_storage_path(chunk_request)
 
             # create parent directory
@@ -317,8 +357,19 @@ def write_chunk(chunk_request, chunk_buf, driver_config, driver_secrets):
         else:
             if chunk_request.request_type == DriverRequest.BLOCK:
                 path = gateway.request_path(chunk_request)
+                gateway.log_debug(
+                    "write_chunk (file) - type(%d), path(%s), bid(%s), bver(%s), size(%d)" %
+                    (
+                        chunk_request.request_type,
+                        path,
+                        chunk_request.block_id,
+                        chunk_request.block_version,
+                        actual_block_size
+                    )
+                )
+
                 file_path = gateway.path_join("/", path)
-                
+
                 repl = _get_replica(
                     fs,
                     file_path,
@@ -338,8 +389,21 @@ def write_chunk(chunk_request, chunk_buf, driver_config, driver_secrets):
                 repl.commit()
             elif ((chunk_request.request_type == DriverRequest.MANIFEST) or
                  (chunk_request.request_type == DriverRequest.RENAME_HINT)):
-                path = gateway.request_to_storage_path(chunk_request)
-                file_path = gateway.path_join(MANIFEST_DIR, path)
+                path = gateway.request_path(chunk_request)
+                gateway.log_debug(
+                    "write_chunk (file) - type(%d), path(%s), bid(%s), bver(%s), size(%d)" %
+                    (
+                        chunk_request.request_type,
+                        path,
+                        chunk_request.block_id,
+                        chunk_request.block_version,
+                        actual_block_size
+                    )
+                )
+
+                file_path = gateway.request_to_storage_path(chunk_request)
+                file_path = gateway.path_join(MANIFEST_DIR, file_path)
+
                 parent_path = os.path.dirname(file_path)
                 if not fs.exists(parent_path):
                     fs.make_dirs(parent_path)
@@ -356,10 +420,19 @@ def write_chunk(chunk_request, chunk_buf, driver_config, driver_secrets):
 
 
 def delete_chunk(chunk_request, driver_config, driver_secrets):
-    gateway.log_debug("delete_chunk - %d" % chunk_request.request_type)
-
     try:
         if block_replication:
+            path = gateway.request_path(chunk_request)
+            gateway.log_debug(
+                "delete_chunk (blk) - type(%d), path(%s), bid(%s), bver(%s)" %
+                (
+                    chunk_request.request_type,
+                    path,
+                    chunk_request.block_id,
+                    chunk_request.block_version
+                )
+            )
+
             file_path = gateway.request_to_storage_path(chunk_request)
 
             # delete
@@ -368,6 +441,16 @@ def delete_chunk(chunk_request, driver_config, driver_secrets):
         else:
             if chunk_request.request_type == DriverRequest.BLOCK:
                 path = gateway.request_path(chunk_request)
+                gateway.log_debug(
+                    "delete_chunk (file) - type(%d), path(%s), bid(%s), bver(%s)" %
+                    (
+                        chunk_request.request_type,
+                        path,
+                        chunk_request.block_id,
+                        chunk_request.block_version
+                    )
+                )
+
                 file_path = gateway.path_join("/", path)
 
                 repl = _get_replica(
@@ -388,8 +471,19 @@ def delete_chunk(chunk_request, driver_config, driver_secrets):
                 repl.commit()
             elif ((chunk_request.request_type == DriverRequest.MANIFEST) or
                  (chunk_request.request_type == DriverRequest.RENAME_HINT)):
-                path = gateway.request_to_storage_path(chunk_request)
-                file_path = gateway.path_join(MANIFEST_DIR, path)
+                path = gateway.request_path(chunk_request)
+                gateway.log_debug(
+                    "delete_chunk (file) - type(%d), path(%s), bid(%s), bver(%s)" %
+                    (
+                        chunk_request.request_type,
+                        path,
+                        chunk_request.block_id,
+                        chunk_request.block_version
+                    )
+                )
+
+                file_path = gateway.request_to_storage_path(chunk_request)
+                file_path = gateway.path_join(MANIFEST_DIR, file_path)
 
                 if fs.exists(file_path):
                     fs.unlink(file_path)
