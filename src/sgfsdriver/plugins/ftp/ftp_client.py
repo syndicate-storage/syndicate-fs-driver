@@ -216,7 +216,7 @@ class ftp_client(object):
         stat_dict["day"] = fields[6]
         stat_dict["d3"] = fields[7]
         stat_dict["name"] = fields[8]
-        
+
         full_path = parent.rstrip("/") + "/" + stat_dict["name"]
 
         directory = False
@@ -226,6 +226,9 @@ class ftp_client(object):
             directory = True
         elif stat_dict["perm"].startswith("-"):
             directory = False
+        elif stat_dict["perm"].startswith("l"):
+            directory = True
+            symlink = True
         else:
             raise IOError("Unknown type : %s" % stat_dict["perm"])
 
@@ -358,7 +361,7 @@ class ftp_client(object):
 
         self._reconnect_when_needed()
         self.session.voidcmd("TYPE I")
-        
+
         buf = BytesIO()
         total_read = 0
 
