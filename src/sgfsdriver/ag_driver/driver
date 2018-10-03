@@ -27,6 +27,7 @@ import errno
 import threading
 import Queue
 import json
+import os.path
 import syndicate.util.gateway as gateway
 import sgfsdriver.lib.abstractfs as abstractfs
 
@@ -264,18 +265,36 @@ def datasets_update_cb(updated_entries, added_entries, removed_entries):
         command_queue.put((cmd, None))
 
 
+def _get_parents(path):
+    parents = []
+    idx = path.find("/", 1)
+    while idx > 0:
+        parents.append(path[:idx])
+        idx = path.find("/", idx + 1)
+    return parents
+
 def _resync(paths):
     gateway.log_debug("_resync")
+
+    # if file_sync is True, we need to remember dirs created to not double create a directory
+    dirs_created = {} # name, True
 
     stack = paths
     while len(stack) > 0:
         entry_path = stack.pop(0)
+
+        if entry_path != "/":
+            for parent_dir in _get_parents(entry_path):
+                if parent_dir not in dirs_created:
+                    parent_st = fs.stat(parent_dir)
+                    e = abstractfs.afsevent(parent_dir, parent_st)
+                    datasets_update_cb([], [e], [])
+                    dirs_created[parent_dir] = parent_st
+
         entry_st = fs.stat(entry_path)
         if entry_st:
             if entry_st.directory:
                 if (entry_st.symlink and follow_symlink) or (not st.symlink):
-                    e = abstractfs.afsevent(entry_path, entry_st)
-
                     fs.clear_cache(entry_path)
                     sub_entries = fs.list_dir(entry_path)
                     if sub_entries:
@@ -285,7 +304,10 @@ def _resync(paths):
                             stack.append(sub_entry_path)
 
                     if entry_path != "/":
-                        datasets_update_cb([], [e], [])
+                        if entry_path not in dirs_created:
+                            e = abstractfs.afsevent(entry_path, entry_st)
+                            datasets_update_cb([], [e], [])
+                            dirs_created[entry_path] = entry_st
             else:
                 e = abstractfs.afsevent(entry_path, entry_st)
                 datasets_update_cb([], [e], [])
