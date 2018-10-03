@@ -1,5 +1,6 @@
 {
    "DATASET_DIR": "/tmp/syndicate-AG-dataset",
+   "DATASET_FILES": [],
    "MS_TTL": 300,
    "AG_TTL": 300,
    "DATA_CACHE_SIZE": 300,

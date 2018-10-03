@@ -39,7 +39,8 @@ DEFAULT_DATA_CACHE_SIZE = 300      # 300 blocks
 DEFAULT_DATA_CACHE_TTL = 60 * 5     # 5min
 
 fs = None
-storage_dir = None
+dataset_dir = None
+dataset_files = None
 sync_on_init = True
 follow_symlink = True
 read_ttl = DEFAULT_READ_TTL * 1000
@@ -55,7 +56,8 @@ data_cache = None
 
 def _initFS(driver_config, driver_secrets, role):
     global fs
-    global storage_dir
+    global dataset_dir
+    global dataset_files
     global sync_on_init
     global follow_symlink
     global read_ttl
@@ -78,12 +80,20 @@ def _initFS(driver_config, driver_secrets, role):
         gateway.log_error("No DRIVER_FS_PLUGIN_CONFIG defined")
         return False
 
-    if "DATASET_DIR" not in driver_config:
-        gateway.log_error("No DATASET_DIR defined")
-        return False
+    if "DATASET_DIR" in driver_config:
+        dataset_dir = driver_config['DATASET_DIR']
+        dataset_dir = "/" + dataset_dir.strip("/")
+    else:
+        dataset_dir = "/"
 
-    storage_dir = driver_config['DATASET_DIR']
-    storage_dir = "/" + storage_dir.strip("/")
+    if "DATASET_FILES" in driver_config:
+        cfg_dataset_files = driver_config['DATASET_FILES']
+        dataset_files = []
+        for dataset_file in cfg_dataset_files:
+            dataset_file = "/" + dataset_file.strip("/")
+            dataset_files.append(dataset_file)
+    else:
+        dataset_files = []
 
     if "SYNC_ON_INIT" in driver_config:
         sync_on_init = bool(driver_config["SYNC_ON_INIT"])
@@ -112,7 +122,7 @@ def _initFS(driver_config, driver_secrets, role):
         plugin_config = json.loads(json_plugin_config)
 
     plugin_config["secrets"] = driver_secrets
-    plugin_config["work_root"] = storage_dir
+    plugin_config["work_root"] = dataset_dir
 
     data_cache = ExpiringDict(
         max_len=data_cache_size,
@@ -254,28 +264,31 @@ def datasets_update_cb(updated_entries, added_entries, removed_entries):
         command_queue.put((cmd, None))
 
 
-def _resync(path):
+def _resync(paths):
     gateway.log_debug("_resync")
 
-    stack = [path]
+    stack = paths
     while len(stack) > 0:
-        last_dir = stack.pop(0)
-        fs.clear_cache(last_dir)
-        entries = fs.list_dir(last_dir)
-        if entries:
-            for entry in entries:
-                # entry is a filename
-                entry_path = last_dir.rstrip("/") + "/" + entry
-                st = fs.stat(entry_path)
-                if st:
-                    e = abstractfs.afsevent(entry_path, st)
+        entry_path = stack.pop(0)
+        entry_st = fs.stat(entry_path)
+        if entry_st:
+            if entry_st.directory:
+                if (entry_st.symlink and follow_symlink) or (not st.symlink):
+                    e = abstractfs.afsevent(entry_path, entry_st)
 
-                    if st.directory:
-                        # do sync recursively
-                        if (st.symlink and follow_symlink) or (not st.symlink):
-                            stack.append(entry_path)
+                    fs.clear_cache(entry_path)
+                    sub_entries = fs.list_dir(entry_path)
+                    if sub_entries:
+                        for sub_entry in sub_entries:
+                            # sub_entry is a filename
+                            sub_entry_path = entry_path.rstrip("/") + "/" + sub_entry
+                            stack.append(sub_entry_path)
 
-                    datasets_update_cb([], [e], [])
+                    if entry_path != "/":
+                        datasets_update_cb([], [e], [])
+            else:
+                e = abstractfs.afsevent(entry_path, entry_st)
+                datasets_update_cb([], [e], [])
 
 
 def driver_init(driver_config, driver_secrets):
@@ -300,17 +313,20 @@ def driver_init(driver_config, driver_secrets):
         return False
 
     if not fs.exists("/"):
-        gateway.log_error("No such file or directory: %s" % storage_dir)
+        gateway.log_error("No such file or directory: %s" % dataset_dir)
         return False
 
     if not fs.is_dir("/"):
-        gateway.log_error("Not a directory: %s" % storage_dir)
+        gateway.log_error("Not a directory: %s" % dataset_dir)
         return False
 
     if role == abstractfs.afsrole.DISCOVER:
         if sync_on_init:
             # add initial dataset
-            _resync("/")
+            if dataset_files and len(dataset_files) > 0:
+                _resync(dataset_files)
+            else:
+                _resync(["/"])
 
     return True
 
