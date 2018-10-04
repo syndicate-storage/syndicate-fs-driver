@@ -118,6 +118,8 @@ class ftp_client(object):
         )
 
     def connect(self):
+        logger.info("connect: connecting to FTP server (%s)" % self.host)
+
         self.session = ftplib.FTP()
         self.session.connect(self.host, self.port)
         self.session.login(self.user, self.password)
@@ -125,12 +127,14 @@ class ftp_client(object):
 
     def close(self):
         try:
+            logger.info("close: closing a connectinn to FTP server (%s)" % self.host)
             self.session.quit()
             self.last_comm = None
         except:
             pass
 
     def reconnect(self):
+        logger.info("reconnect: reconnecting to FTP server (%s)" % self.host)
         self.close()
         self.connect()
 
@@ -285,12 +289,14 @@ class ftp_client(object):
         if expired:
             # perform a short command then reconnect at fail
             try:
+                logger.info("_reconnect_when_needed: check live")
                 self.session.pwd()
                 self.last_comm = datetime.now()
             except:
                 self.reconnect()
 
     def _list_dir_and_stat_MLSD(self, path):
+        logger.info("_list_dir_and_stat_MLSD: retrlines with MLSD - %s" % path)
         stats = []
         try:
             entries = []
@@ -313,6 +319,7 @@ class ftp_client(object):
         return stats
 
     def _list_dir_and_stat_LIST(self, path):
+        logger.info("_list_dir_and_stat_LIST: retrlines with LIST - %s" % path)
         stats = []
         try:
             entries = []
@@ -329,6 +336,7 @@ class ftp_client(object):
         return stats
 
     def _list_dir_and_stat(self, path):
+        logger.info("_list_dir_and_stat: retrlines - %s" % path)
         stats = []
         if self.mlsd_supported:
             try:
@@ -346,6 +354,7 @@ class ftp_client(object):
         if path in self.meta_cache:
             return self.meta_cache[path]
 
+        logger.info("_ensureDirEntryStatLoaded: change working directory - %s" % path)
         self._reconnect_when_needed()
         self.session.cwd(path)
 
@@ -389,6 +398,7 @@ class ftp_client(object):
     Returns ftp_status
     """
     def stat(self, path):
+        logger.info("stat: %s" % path)
         try:
             # try bulk loading of stats
             parent = os.path.dirname(path)
@@ -406,6 +416,7 @@ class ftp_client(object):
     Returns directory entries in string
     """
     def list_dir(self, path):
+        logger.info("list_dir: %s" % path)
         stats = self._ensureDirEntryStatLoaded(path)
         entries = []
         if stats:
@@ -420,6 +431,7 @@ class ftp_client(object):
         return False
 
     def make_dirs(self, path):
+        logger.info("make_dirs: %s" % path)
         if not self.exists(path):
             # make parent dir first
             self._reconnect_when_needed()
@@ -430,6 +442,7 @@ class ftp_client(object):
             self.clear_stat_cache(os.path.dirname(path))
 
     def exists(self, path):
+        logger.info("exists: %s" % path)
         try:
             sb = self.stat(path)
             if sb:
@@ -439,6 +452,7 @@ class ftp_client(object):
             return False
 
     def clear_stat_cache(self, path=None):
+        logger.info("clear_stat_cache: %s" % path)
         if(path):
             if path in self.meta_cache:
                 # directory
