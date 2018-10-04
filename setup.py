@@ -34,6 +34,7 @@ for plugin in plugins:
 
 # dependencies
 dependencies = [
+    'xattr',
     'pika',
     'python-irodsclient',
     'pyinotify',
