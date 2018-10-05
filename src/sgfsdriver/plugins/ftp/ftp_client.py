@@ -382,6 +382,7 @@ class ftp_client(object):
             reset = reconn
 
         if reset:
+            logger.info("_openFile : resetting file transfer for %s" % path)
             try:
                 if self.opened_conn:
                     self.opened_conn.close()
@@ -398,6 +399,7 @@ class ftp_client(object):
             self.opened_conn = conn
             return conn
         else:
+            logger.info("_openFile : reusing file transfer for %s" % path)
             return self.opened_conn
 
     def _readRange(self, path, offset, size):
