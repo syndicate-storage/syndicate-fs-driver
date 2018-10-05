@@ -109,6 +109,10 @@ class ftp_client(object):
 
         self.session = None
         self.last_comm = None
+        self.opened_file = None
+        self.opened_file_offset = 0
+        self.opened_conn = None
+
         self.mlsd_supported = True
 
         # init cache
@@ -123,6 +127,7 @@ class ftp_client(object):
         self.session = ftplib.FTP()
         self.session.connect(self.host, self.port)
         self.session.login(self.user, self.password)
+        self.session.voidcmd("TYPE I")
         self.last_comm = datetime.now()
 
     def close(self):
@@ -292,8 +297,12 @@ class ftp_client(object):
                 logger.info("_reconnect_when_needed: check live")
                 self.session.pwd()
                 self.last_comm = datetime.now()
+                return False
             except:
                 self.reconnect()
+                return True
+        else:
+            return False
 
     def _list_dir_and_stat_MLSD(self, path):
         logger.info("_list_dir_and_stat_MLSD: retrlines with MLSD - %s" % path)
@@ -362,34 +371,52 @@ class ftp_client(object):
         self.meta_cache[path] = stats
         return stats
 
-    def _readRange(self, path, offset, size):
-        logger.info(
-            "_readRange : %s, off(%d), size(%d)" %
-            (path, offset, size)
-        )
+    def _openFile(self, path, offset):
+        logger.info("_openFile : %s, off(%d)" % (path, offset))
 
-        self._reconnect_when_needed()
-        self.session.voidcmd("TYPE I")
+        reset = True
+        reconn = self._reconnect_when_needed()
+        if self.opened_conn and self.opened_file == path and self.opened_file_offset == offset:
+            # reuse
+            # if reconnected, reset
+            reset = reconn
+
+        if reset:
+            try:
+                if self.opened_conn:
+                    self.opened_conn.close()
+            except ftplib.error_temp:
+                # abortion of transfer causes this type of error
+                pass
+
+            self.session.voidresp()
+
+            conn = self.session.transfercmd("RETR %s" % path, offset)
+            self.last_comm = datetime.now()
+            self.opened_file = path
+            self.opened_file_offset = offset
+            self.opened_conn = conn
+            return conn
+        else:
+            return self.opened_conn
+
+    def _readRange(self, path, offset, size):
+        logger.info("_readRange : %s, off(%d), size(%d)" % (path, offset, size))
+
+        conn = self._openFile(path, offset)
 
         buf = BytesIO()
         total_read = 0
 
-        try:
-            conn = self.session.transfercmd("RETR %s" % path, offset)
-            self.last_comm = datetime.now()
-            while total_read < size:
-                data = conn.recv(size - total_read)
-                if data:
-                    buf.write(data)
-                    total_read += len(data)
-                else:
-                    break
+        while total_read < size:
+            data = conn.recv(size - total_read)
+            if data:
+                buf.write(data)
+                total_read += len(data)
+            else:
+                break
 
-            conn.close()
-            self.session.voidresp()
-        except ftplib.error_temp:
-            # abortion of transfer causes this type of error
-            pass
+        self.last_comm = datetime.now()
 
         bybuf = buf.getvalue()
         return bybuf
