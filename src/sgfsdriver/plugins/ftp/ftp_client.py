@@ -39,9 +39,9 @@ fh.setFormatter(formatter)
 logger.addHandler(fh)
 
 METADATA_CACHE_SIZE = 10000
-METADATA_CACHE_TTL = 60     # 60 sec
+METADATA_CACHE_TTL = 60 * 60     # 1 hour
 
-FTP_TIMEOUT = 30    # 30 sec
+FTP_TIMEOUT = 5 * 60    # 5 min
 
 """
 Interface class to FTP
@@ -132,6 +132,7 @@ class ftp_client(object):
     def close(self):
         try:
             logger.info("close: closing a connectinn to FTP server (%s)" % self.host)
+            self._closeFile()
             self.session.quit()
             self.last_comm = None
         except:
@@ -294,6 +295,7 @@ class ftp_client(object):
             # perform a short command then reconnect at fail
             try:
                 logger.info("_reconnect_when_needed: check live")
+                self._closeFile()
                 self.session.pwd()
                 self.last_comm = datetime.now()
                 return False
@@ -309,6 +311,7 @@ class ftp_client(object):
         try:
             entries = []
             try:
+                self._closeFile()
                 self.session.retrlines("MLSD", entries.append)
             except ftplib.error_perm, e:
                 msg = str(e)
@@ -331,6 +334,7 @@ class ftp_client(object):
         stats = []
         try:
             entries = []
+            self._closeFile()
             self.session.retrlines("LIST", entries.append)
             self.last_comm = datetime.now()
             for ent in entries:
@@ -363,6 +367,7 @@ class ftp_client(object):
             return self.meta_cache[path]
 
         logger.info("_ensureDirEntryStatLoaded: change working directory - %s" % path)
+        self._closeFile()
         self._reconnect_when_needed()
         self.session.cwd(path)
 
@@ -400,6 +405,21 @@ class ftp_client(object):
         else:
             logger.info("_openFile : reusing file transfer for %s" % path)
             return self.opened_conn
+
+    def _closeFile(self):
+        logger.info("_closeFile")
+
+        try:
+            if self.opened_conn:
+                self.opened_conn.close()
+                self.session.voidresp()
+        except ftplib.error_temp:
+            # abortion of transfer causes this type of error
+            pass
+
+        self.opened_file = None
+        self.opened_file_offset = 0
+        self.opened_conn = None
 
     def _readRange(self, path, offset, size):
         logger.info("_readRange : %s, off(%d), size(%d)" % (path, offset, size))
@@ -464,6 +484,7 @@ class ftp_client(object):
         logger.info("make_dirs: %s" % path)
         if not self.exists(path):
             # make parent dir first
+            self._closeFile()
             self._reconnect_when_needed()
             self.make_dirs(os.path.dirname(path))
             self.session.mkd(path)
@@ -519,6 +540,7 @@ class ftp_client(object):
         try:
             logger.info("write: writing buffer %d" % len(buf))
 
+            self._closeFile()
             bio = BytesIO()
             bio.write(buf)
             bio.seek(0)
@@ -546,6 +568,7 @@ class ftp_client(object):
         logger.info("unlink : %s" % path)
         try:
             logger.info("unlink: deleting a file - %s" % path)
+            self._closeFile()
             self._reconnect_when_needed()
             self.session.delete(path)
             self.last_comm = datetime.now()
@@ -563,6 +586,7 @@ class ftp_client(object):
         logger.info("rename : %s -> %s" % (path1, path2))
         try:
             logger.info("rename: renaming a file - %s to %s" % (path1, path2))
+            self._closeFile()
             self._reconnect_when_needed()
             self.session.rename(path1, path2)
             self.last_comm = datetime.now()
