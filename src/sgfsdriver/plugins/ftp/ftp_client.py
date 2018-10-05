@@ -127,7 +127,6 @@ class ftp_client(object):
         self.session = ftplib.FTP()
         self.session.connect(self.host, self.port)
         self.session.login(self.user, self.password)
-        self.session.voidcmd("TYPE I")
         self.last_comm = datetime.now()
 
     def close(self):
@@ -391,6 +390,7 @@ class ftp_client(object):
                 # abortion of transfer causes this type of error
                 pass
 
+            self.session.voidcmd("TYPE I")
             conn = self.session.transfercmd("RETR %s" % path, offset)
             self.last_comm = datetime.now()
             self.opened_file = path
@@ -413,7 +413,9 @@ class ftp_client(object):
             data = conn.recv(size - total_read)
             if data:
                 buf.write(data)
-                total_read += len(data)
+                data_len = len(data)
+                total_read += data_len
+                self.opened_file_offset += data_len
             else:
                 break
 
