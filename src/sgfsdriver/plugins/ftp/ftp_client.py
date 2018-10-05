@@ -294,7 +294,7 @@ class ftp_client(object):
         if expired:
             # perform a short command then reconnect at fail
             try:
-                logger.info("_reconnect_when_needed: check live")
+                logger.info("_reconnect_when_needed: expired - check live")
                 self._closeFile()
                 self.session.pwd()
                 self.last_comm = datetime.now()
@@ -311,7 +311,6 @@ class ftp_client(object):
         try:
             entries = []
             try:
-                self._closeFile()
                 self.session.retrlines("MLSD", entries.append)
             except ftplib.error_perm, e:
                 msg = str(e)
@@ -334,7 +333,6 @@ class ftp_client(object):
         stats = []
         try:
             entries = []
-            self._closeFile()
             self.session.retrlines("LIST", entries.append)
             self.last_comm = datetime.now()
             for ent in entries:
@@ -347,8 +345,16 @@ class ftp_client(object):
 
         return stats
 
-    def _list_dir_and_stat(self, path):
-        logger.info("_list_dir_and_stat: retrlines - %s" % path)
+    def _ensureDirEntryStatLoaded(self, path):
+        # reuse cache
+        if path in self.meta_cache:
+            return self.meta_cache[path]
+
+        logger.info("_ensureDirEntryStatLoaded: loading - %s" % path)
+        self._closeFile()
+        self._reconnect_when_needed()
+        self.session.cwd(path)
+
         stats = []
         if self.mlsd_supported:
             try:
@@ -359,19 +365,6 @@ class ftp_client(object):
         else:
             stats = self._list_dir_and_stat_LIST(path)
 
-        return stats
-
-    def _ensureDirEntryStatLoaded(self, path):
-        # reuse cache
-        if path in self.meta_cache:
-            return self.meta_cache[path]
-
-        logger.info("_ensureDirEntryStatLoaded: change working directory - %s" % path)
-        self._closeFile()
-        self._reconnect_when_needed()
-        self.session.cwd(path)
-
-        stats = self._list_dir_and_stat(path)
         self.meta_cache[path] = stats
         return stats
 
@@ -386,15 +379,17 @@ class ftp_client(object):
             reset = reconn
 
         if reset:
-            logger.info("_openFile : resetting file transfer for %s" % path)
             try:
                 if self.opened_conn:
+                    logger.info("_openFile : resetting file transfer for %s (reconn: %s)" % (path, reconn))
+                    
                     self.opened_conn.close()
                     self.session.voidresp()
             except ftplib.error_temp:
                 # abortion of transfer causes this type of error
                 pass
 
+            logger.info("_openFile : opening file transfer for %s" % path)
             self.session.voidcmd("TYPE I")
             conn = self.session.transfercmd("RETR %s" % path, offset)
             self.last_comm = datetime.now()
@@ -408,9 +403,9 @@ class ftp_client(object):
 
     def _closeFile(self):
         logger.info("_closeFile")
-
         try:
             if self.opened_conn:
+                logger.info("_closeFile : closing a connection opened")
                 self.opened_conn.close()
                 self.session.voidresp()
         except ftplib.error_temp:
