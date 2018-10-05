@@ -386,11 +386,10 @@ class ftp_client(object):
             try:
                 if self.opened_conn:
                     self.opened_conn.close()
+                    self.session.voidresp()
             except ftplib.error_temp:
                 # abortion of transfer causes this type of error
                 pass
-
-            self.session.voidresp()
 
             conn = self.session.transfercmd("RETR %s" % path, offset)
             self.last_comm = datetime.now()
