@@ -42,6 +42,7 @@ METADATA_CACHE_SIZE = 10000
 METADATA_CACHE_TTL = 60 * 60     # 1 hour
 
 FTP_TIMEOUT = 5 * 60    # 5 min
+BYTES_MAX_SKIP = 1024 * 1024 * 2 # 2MB
 
 """
 Interface class to FTP
@@ -373,7 +374,7 @@ class ftp_client(object):
 
         reset = True
         reconn = self._reconnect_when_needed()
-        if self.opened_conn and self.opened_file == path and self.opened_file_offset == offset:
+        if self.opened_conn and self.opened_file == path and self.opened_file_offset <= offset and self.opened_file_offset + BYTES_MAX_SKIP >= offset:
             # reuse
             # if reconnected, reset
             reset = reconn
@@ -382,7 +383,7 @@ class ftp_client(object):
             try:
                 if self.opened_conn:
                     logger.info("_openFile : resetting file transfer for %s (reconn: %s)" % (path, reconn))
-                    
+
                     self.opened_conn.close()
                     self.session.voidresp()
             except ftplib.error_temp:
@@ -399,6 +400,21 @@ class ftp_client(object):
             return conn
         else:
             logger.info("_openFile : reusing file transfer for %s" % path)
+            # skip if needed
+            skip_bytes = offset - self.opened_file_offset
+            total_read = 0
+            while total_read < skip_bytes:
+                data = self.opened_conn.recv(skip_bytes - total_read)
+                if data:
+                    data_len = len(data)
+                    total_read += data_len
+                    self.opened_file_offset += data_len
+                else:
+                    #EOF
+                    break
+
+            if total_read > 0:
+                self.last_comm = datetime.now()
             return self.opened_conn
 
     def _closeFile(self):
@@ -424,6 +440,10 @@ class ftp_client(object):
         buf = BytesIO()
         total_read = 0
 
+        if self.opened_file_offset != offset:
+             # EOF
+            return buf.getvalue()
+
         while total_read < size:
             data = conn.recv(size - total_read)
             if data:
@@ -434,10 +454,10 @@ class ftp_client(object):
             else:
                 break
 
-        self.last_comm = datetime.now()
+        if total_read > 0:
+            self.last_comm = datetime.now()
 
-        bybuf = buf.getvalue()
-        return bybuf
+        return buf.getvalue()
 
     """
     Returns ftp_status
