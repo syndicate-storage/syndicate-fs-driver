@@ -21,6 +21,7 @@ import os
 import logging
 import time
 import ftplib
+import threading
 
 from datetime import datetime
 from expiringdict import ExpiringDict
@@ -43,6 +44,10 @@ METADATA_CACHE_TTL = 60 * 60     # 1 hour
 
 FTP_TIMEOUT = 5 * 60    # 5 min
 BYTES_MAX_SKIP = 1024 * 1024 * 2 # 2MB
+CONNECTIONS_MAX_NUM = 5
+
+downloader_sessions = {}
+
 
 """
 Interface class to FTP
@@ -86,6 +91,244 @@ class ftp_status(object):
             (rep_d, rep_s, self.name, self.size)
 
 
+class downloader_connection(object):
+    def __init__(self,
+                 path,
+                 connection,
+                 offset=0,
+                 last_comm=0):
+         self.path = path
+         self.offset = offset
+         self.connection = connection
+         self.last_comm = last_comm
+         self._lock = threading.RLock()
+
+    def __repr__(self):
+        return "<downloader_connection path(%s) off(%d) last_comm(%s)>" % \
+            (self.path, self.offset, self.last_comm)
+
+    def lock(self):
+        self._lock.acquire()
+
+    def unlock(self):
+        self._lock.release()
+
+
+class downloader_session(object):
+    def __init__(self,
+                 host,
+                 port=21,
+                 session=None):
+         self.host = host
+         self.port = port
+         self.session = session
+         self.connections = {}
+         self._lock = threading.RLock()
+
+    def __repr__(self):
+        return "<downloader_session host(%s) port(%d)>" % \
+            (self.host, self.port)
+
+    def lock(self):
+        self._lock.acquire()
+
+    def unlock(self):
+        self._lock.release()
+
+    def _new_connection(self, path, offset=0):
+        logger.info("_new_connection : %s, off(%d)" % (path, offset))
+
+        self.lock()
+        self.session.voidcmd("TYPE I")
+        conn = self.session.transfercmd("RETR %s" % path, offset)
+        connection = downloader_connection(path, conn, offset, datetime.now())
+        self.connections[path] = connection
+        self.unlock()
+        return connection
+
+    def _close_connection(self, connection):
+        path = connection.path
+        logger.info("_close_connection : %s" % path)
+
+        self.lock()
+        connection.lock()
+        try:
+            conn = connection.connection
+            conn.close()
+            self.session.voidresp()
+        except ftplib.error_temp:
+            # abortion of transfer causes this type of error
+            pass
+
+        del self.connections[path]
+        connection.unlock()
+        self.unlock()
+
+    def _get_connection(self, path, offset):
+        connection = None
+        logger.info("_get_connection : %s, off(%d)" % (path, offset))
+
+        self.lock()
+
+        if path in self.connections:
+            connection = self.connections[path]
+            if connection:
+                reusable = False
+                connection.lock()
+
+                coffset = connection.offset
+                if coffset <= offset and coffset + BYTES_MAX_SKIP >= offset:
+                    reusable = True
+
+                time_delta = datetime.now() - connection.last_comm
+                if time_delta.total_seconds() < FTP_TIMEOUT:
+                    reusable = True
+
+                connection.unlock()
+
+                if not reusable:
+                    self._close_connection(connection)
+                    connection = None
+
+        if len(self.connections) >= CONNECTIONS_MAX_NUM:
+            # remove oldest
+            oldest = None
+            for live_connection in self.connections.values():
+                if not oldest:
+                    oldest = live_connection
+                else:
+                    if oldest.last_comm > live_connection.last_comm:
+                        oldest = live_connection
+
+            if oldest:
+                self._close_connection(oldest)
+
+        if connection:
+            connection.lock()
+
+            # may need to move offset
+            skip_bytes = offset - connection.offset
+            total_read = 0
+            EOF = False
+            while total_read < skip_bytes:
+                data = connection.connection.recv(skip_bytes - total_read)
+                if data:
+                    data_len = len(data)
+                    total_read += data_len
+                    connection.offset += data_len
+                else:
+                    #EOF
+                    EOF = True
+                    break
+
+            if total_read > 0:
+                connection.last_comm = datetime.now()
+
+            #connection.unlock()
+        else:
+            connection = self._new_connection(path, offset)
+            connection.lock()
+
+        self.unlock()
+        return connection
+
+    def read_data(self, path, offset, size):
+        logger.info("read_data : %s, off(%d), size(%d)" % (path, offset, size))
+
+        #connection is locked
+        self.lock()
+        connection = self._get_connection(path, offset)
+
+        buf = BytesIO()
+        total_read = 0
+        EOF = False
+
+        if connection.offset != offset:
+            connection.unlock()
+            self._close_connection(connection)
+            connection = self._new_connection(path, offset)
+            connection.lock()
+            #raise Exception("Connection does not have right offset %d - %d" % (connection.offset, offset))
+
+        while total_read < size:
+            data = connection.connection.recv(size - total_read)
+            if data:
+                buf.write(data)
+                data_len = len(data)
+                total_read += data_len
+                connection.offset += data_len
+            else:
+                #EOF
+                EOF = True
+                break
+
+        if total_read > 0:
+            connection.last_comm = datetime.now()
+
+        connection.unlock()
+
+        if EOF:
+            self._close_connection(connection)
+
+        self.unlock()
+        return buf.getvalue()
+
+    def close(self):
+        self.lock()
+        for connection in self.connections.values():
+            logger.info("_close_connection : %s" % connection.path)
+
+            connection.lock()
+            try:
+                conn = connection.connection
+                conn.close()
+                self.session.voidresp()
+            except ftplib.error_temp:
+                # abortion of transfer causes this type of error
+                pass
+
+            del self.connections[path]
+            connection.unlock()
+
+        self.unlock()
+
+    def quit(self):
+        self.session.quit()
+        self.session = None
+
+class prefetch_task(threading.Thread):
+    def __init__(self,
+                 group=None,
+                 target=None,
+                 name=None,
+                 args=(),
+                 kwargs=None,
+                 verbose=None):
+        threading.Thread.__init__(self, group=group, target=target, name=name, verbose=verbose)
+        self.args = args
+        self.kwargs = kwargs
+        self.host = kwargs["host"]
+        self.port = int(kwargs["port"])
+        self.path = kwargs["path"]
+        self.offset = kwargs["offset"]
+        self.size = kwargs["size"]
+        self.complete = False
+
+    def run(self):
+        logger.info("prefetch_task : %s:%d - %s, off(%d), size(%d)" % (self.host, self.port, self.path, self.offset, self.size))
+        key = "%s:%d" % (self.host, self.port)
+        session = downloader_sessions[key]
+        try:
+            buf = session.read_data(self.path, self.offset, self.size)
+            logger.info("prefetch_task: read done")
+        except Exception, e:
+            logger.error("prefetch_task: " + traceback.format_exc())
+            traceback.print_exc()
+
+        self.data = buf
+        self.complete = True
+
+
 class ftp_client(object):
     def __init__(self,
                  host=None,
@@ -93,8 +336,8 @@ class ftp_client(object):
                  user='anonymous',
                  password='anonymous@email.com'):
         self.host = host
-        if port:
-            self.port = port
+        if port > 0:
+            self.port = int(port)
         else:
             self.port = 21
 
@@ -110,11 +353,8 @@ class ftp_client(object):
 
         self.session = None
         self.last_comm = None
-        self.opened_file = None
-        self.opened_file_offset = 0
-        self.opened_conn = None
-
         self.mlsd_supported = True
+        self.prefetch_thread = None
 
         # init cache
         self.meta_cache = ExpiringDict(
@@ -124,16 +364,22 @@ class ftp_client(object):
 
     def connect(self):
         logger.info("connect: connecting to FTP server (%s)" % self.host)
-
-        self.session = ftplib.FTP()
-        self.session.connect(self.host, self.port)
-        self.session.login(self.user, self.password)
+        ftp_session = ftplib.FTP()
+        ftp_session.connect(self.host, self.port)
+        ftp_session.login(self.user, self.password)
         self.last_comm = datetime.now()
+
+        key = "%s:%d" % (self.host, self.port)
+        self.session = downloader_session(self.host, self.port, ftp_session)
+        downloader_sessions[key] = self.session
 
     def close(self):
         try:
             logger.info("close: closing a connectinn to FTP server (%s)" % self.host)
-            self._closeFile()
+            key = "%s:%d" % (self.host, self.port)
+            del downloader_sessions[key]
+
+            self.session.close()
             self.session.quit()
             self.last_comm = None
         except:
@@ -294,25 +540,29 @@ class ftp_client(object):
 
         if expired:
             # perform a short command then reconnect at fail
+            logger.info("_reconnect_when_needed: expired - check live")
+            self.session.lock()
             try:
-                logger.info("_reconnect_when_needed: expired - check live")
-                self._closeFile()
-                self.session.pwd()
+                self.session.close()
+                self.session.session.pwd()
                 self.last_comm = datetime.now()
                 return False
             except:
                 self.reconnect()
                 return True
+            finally:
+                self.session.unlock()
         else:
             return False
 
     def _list_dir_and_stat_MLSD(self, path):
         logger.info("_list_dir_and_stat_MLSD: retrlines with MLSD - %s" % path)
         stats = []
+        self.session.lock()
         try:
             entries = []
             try:
-                self.session.retrlines("MLSD", entries.append)
+                self.session.session.retrlines("MLSD", entries.append)
             except ftplib.error_perm, e:
                 msg = str(e)
                 if "500" in msg or "unknown command" in msg.lower():
@@ -326,15 +576,18 @@ class ftp_client(object):
         except ftplib.error_perm:
             logger.error("_list_dir_and_stat_MLSD: " + traceback.format_exc())
             traceback.print_exc()
+        finally:
+            self.session.unlock()
 
         return stats
 
     def _list_dir_and_stat_LIST(self, path):
         logger.info("_list_dir_and_stat_LIST: retrlines with LIST - %s" % path)
         stats = []
+        self.session.lock()
         try:
             entries = []
-            self.session.retrlines("LIST", entries.append)
+            self.session.session.retrlines("LIST", entries.append)
             self.last_comm = datetime.now()
             for ent in entries:
                 st = self._parse_LIST(path, ent)
@@ -343,6 +596,8 @@ class ftp_client(object):
         except ftplib.error_perm:
             logger.error("_list_dir_and_stat_LIST: " + traceback.format_exc())
             traceback.print_exc()
+        finally:
+            self.session.unlock()
 
         return stats
 
@@ -352,9 +607,10 @@ class ftp_client(object):
             return self.meta_cache[path]
 
         logger.info("_ensureDirEntryStatLoaded: loading - %s" % path)
-        self._closeFile()
         self._reconnect_when_needed()
-        self.session.cwd(path)
+        self.session.lock()
+        self.session.session.cwd(path)
+        self.session.unlock()
 
         stats = []
         if self.mlsd_supported:
@@ -369,95 +625,31 @@ class ftp_client(object):
         self.meta_cache[path] = stats
         return stats
 
-    def _openFile(self, path, offset):
-        logger.info("_openFile : %s, off(%d)" % (path, offset))
+    def _invoke_prefetch(self, path, offset, size):
+        logger.info("_invoke_prefetch : %s, off(%d), size(%d)" % (path, offset, size))
+        self.prefetch_thread = prefetch_task(name="prefetch_task_thread", kwargs={'host':self.session.host, 'port':self.session.port, 'path':path, 'offset':offset, 'size':size})
+        self.prefetch_thread.start()
 
-        reset = True
-        reconn = self._reconnect_when_needed()
-        if self.opened_conn and self.opened_file == path and self.opened_file_offset <= offset and self.opened_file_offset + BYTES_MAX_SKIP >= offset:
-            # reuse
-            # if reconnected, reset
-            reset = reconn
+    def _get_prefetch_data(self, path, offset, size):
+        logger.info("_get_prefetch_data : %s, off(%d), size(%d)" % (path, offset, size))
+        if not self.prefetch_thread:
+            self._invoke_prefetch(path, offset, size)
 
-        if reset:
-            try:
-                if self.opened_conn:
-                    logger.info("_openFile : resetting file transfer for %s (reconn: %s)" % (path, reconn))
+        if self.prefetch_thread.path == path:
+            if self.prefetch_thread.offset <= offset and (self.prefetch_thread.offset + self.prefetch_thread.size) >= offset and (self.prefetch_thread.offset + self.prefetch_thread.size) >= (offset + size):
+                if not self.prefetch_thread.complete:
+                    self.prefetch_thread.join()
 
-                    self.opened_conn.close()
-                    self.session.voidresp()
-            except ftplib.error_temp:
-                # abortion of transfer causes this type of error
-                pass
+                data = self.prefetch_thread.data
+                self.prefetch_thread = None
+                return data
 
-            logger.info("_openFile : opening file transfer for %s" % path)
-            self.session.voidcmd("TYPE I")
-            conn = self.session.transfercmd("RETR %s" % path, offset)
-            self.last_comm = datetime.now()
-            self.opened_file = path
-            self.opened_file_offset = offset
-            self.opened_conn = conn
-            return conn
-        else:
-            logger.info("_openFile : reusing file transfer for %s" % path)
-            # skip if needed
-            skip_bytes = offset - self.opened_file_offset
-            total_read = 0
-            while total_read < skip_bytes:
-                data = self.opened_conn.recv(skip_bytes - total_read)
-                if data:
-                    data_len = len(data)
-                    total_read += data_len
-                    self.opened_file_offset += data_len
-                else:
-                    #EOF
-                    break
-
-            if total_read > 0:
-                self.last_comm = datetime.now()
-            return self.opened_conn
-
-    def _closeFile(self):
-        logger.info("_closeFile")
-        try:
-            if self.opened_conn:
-                logger.info("_closeFile : closing a connection opened")
-                self.opened_conn.close()
-                self.session.voidresp()
-        except ftplib.error_temp:
-            # abortion of transfer causes this type of error
-            pass
-
-        self.opened_file = None
-        self.opened_file_offset = 0
-        self.opened_conn = None
-
-    def _readRange(self, path, offset, size):
-        logger.info("_readRange : %s, off(%d), size(%d)" % (path, offset, size))
-
-        conn = self._openFile(path, offset)
-
-        buf = BytesIO()
-        total_read = 0
-
-        if self.opened_file_offset != offset:
-             # EOF
-            return buf.getvalue()
-
-        while total_read < size:
-            data = conn.recv(size - total_read)
-            if data:
-                buf.write(data)
-                data_len = len(data)
-                total_read += data_len
-                self.opened_file_offset += data_len
-            else:
-                break
-
-        if total_read > 0:
-            self.last_comm = datetime.now()
-
-        return buf.getvalue()
+        self.prefetch_thread = None
+        self._invoke_prefetch(path, offset, size)
+        self.prefetch_thread.join()
+        data = self.prefetch_thread.data
+        self.prefetch_thread = None
+        return data
 
     """
     Returns ftp_status
@@ -499,10 +691,11 @@ class ftp_client(object):
         logger.info("make_dirs: %s" % path)
         if not self.exists(path):
             # make parent dir first
-            self._closeFile()
             self._reconnect_when_needed()
             self.make_dirs(os.path.dirname(path))
-            self.session.mkd(path)
+            self.session.lock()
+            self.session.session.mkd(path)
+            self.session.unlock()
             self.last_comm = datetime.now()
             # invalidate stat cache
             self.clear_stat_cache(os.path.dirname(path))
@@ -538,14 +731,20 @@ class ftp_client(object):
         )
         buf = None
         try:
-            buf = self._readRange(path, offset, size)
+            time1 = datetime.now()
+            buf = self._get_prefetch_data(path, offset, size)
+            #buf = self.session.read_data(path, offset, size)
+            if len(buf) == size:
+                self._invoke_prefetch(path, offset + size, size)
+            time2 = datetime.now()
+            delta = time2 - time1
+            logger.info("read: took - %s" % delta)
             logger.info("read: read done")
         except Exception, e:
             logger.error("read: " + traceback.format_exc())
             traceback.print_exc()
             raise e
 
-        #logger.info("read: returning the buf(" + buf + ")")
         return buf
 
     def write(self, path, offset, buf):
@@ -555,16 +754,17 @@ class ftp_client(object):
         try:
             logger.info("write: writing buffer %d" % len(buf))
 
-            self._closeFile()
             bio = BytesIO()
             bio.write(buf)
             bio.seek(0)
             self._reconnect_when_needed()
-            self.session.storbinary(
+            self.session.lock()
+            self.session.session.storbinary(
                 "STOR %s" % path,
                 bio,
                 rest=offset
             )
+            self.session.unlock()
             self.last_comm = datetime.now()
             logger.info("write: writing done")
         except Exception, e:
@@ -583,9 +783,10 @@ class ftp_client(object):
         logger.info("unlink : %s" % path)
         try:
             logger.info("unlink: deleting a file - %s" % path)
-            self._closeFile()
             self._reconnect_when_needed()
-            self.session.delete(path)
+            self.session.lock()
+            self.session.session.delete(path)
+            self.session.unlock()
             self.last_comm = datetime.now()
             logger.info("unlink: deleting done")
 
@@ -601,9 +802,10 @@ class ftp_client(object):
         logger.info("rename : %s -> %s" % (path1, path2))
         try:
             logger.info("rename: renaming a file - %s to %s" % (path1, path2))
-            self._closeFile()
             self._reconnect_when_needed()
-            self.session.rename(path1, path2)
+            self.session.lock()
+            self.session.session.rename(path1, path2)
+            self.session.unlock()
             self.last_comm = datetime.now()
             logger.info("rename: renaming done")
 
