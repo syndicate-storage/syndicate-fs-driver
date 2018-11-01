@@ -136,7 +136,6 @@ class ftp_session(object):
             ftp_session = ftplib.FTP()
             ftp_session.connect(self.host, self.port)
             ftp_session.login(self.user, self.password)
-            ftp_session.set_debuglevel(2)
             self.session = ftp_session
             logger.info("new ftp session to %s:%d - %d" % (self.host, self.port, id(self.session)))
             self.last_comm = datetime.now()
@@ -450,7 +449,6 @@ class prefetch_task(threading.Thread):
             logger.info("prefetch_task: read done")
         except Exception, e:
             logger.error("prefetch_task: " + traceback.format_exc())
-            traceback.print_exc()
         finally:
             session.unlock()
 
@@ -667,7 +665,6 @@ class ftp_client(object):
                     stats.append(st)
         except ftplib.error_perm:
             logger.error("_list_dir_and_stat_MLSD: " + traceback.format_exc())
-            traceback.print_exc()
 
         return stats
 
@@ -683,7 +680,6 @@ class ftp_client(object):
                     stats.append(st)
         except ftplib.error_perm:
             logger.error("_list_dir_and_stat_LIST: " + traceback.format_exc())
-            traceback.print_exc()
 
         return stats
 
@@ -824,7 +820,6 @@ class ftp_client(object):
             logger.info("read: read done")
         except Exception, e:
             logger.error("read: " + traceback.format_exc())
-            traceback.print_exc()
             raise e
 
         return buf
@@ -844,7 +839,6 @@ class ftp_client(object):
             logger.info("write: writing done")
         except Exception, e:
             logger.error("write: " + traceback.format_exc())
-            traceback.print_exc()
             raise e
 
         # invalidate stat cache
@@ -865,7 +859,6 @@ class ftp_client(object):
             logger.info("unlink: deleting done")
         except Exception, e:
             logger.error("unlink: " + traceback.format_exc())
-            traceback.print_exc()
             raise e
 
         # invalidate stat cache
@@ -882,7 +875,6 @@ class ftp_client(object):
             logger.info("rename: renaming done")
         except Exception, e:
             logger.error("rename: " + traceback.format_exc())
-            traceback.print_exc()
             raise e
 
         # invalidate stat cache
