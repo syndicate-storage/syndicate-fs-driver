@@ -504,6 +504,10 @@ class ftp_client(object):
         except:
             pass
 
+    def reconnect(self):
+        self.close()
+        self.connect()
+
     def __enter__(self):
         self.connect()
         return self
@@ -715,21 +719,20 @@ class ftp_client(object):
 
     def _get_prefetch_data(self, path, offset, size):
         logger.info("_get_prefetch_data : %s, off(%d), size(%d)" % (path, offset, size))
-        if not self.prefetch_thread:
+        invoke_new_thread = False
+        if self.prefetch_thread:
+            if not self.prefetch_thread.complete:
+                self.prefetch_thread.join()
+
+            if self.prefetch_thread.path != path or self.prefetch_thread.offset != offset or self.prefetch_thread.size != size:
+                invoke_new_thread = True
+        else:
+            invoke_new_thread = True
+
+        if invoke_new_thread:
             self._invoke_prefetch(path, offset, size)
+            self.prefetch_thread.join()
 
-        if self.prefetch_thread.path == path:
-            if self.prefetch_thread.offset <= offset and (self.prefetch_thread.offset + self.prefetch_thread.size) >= offset and (self.prefetch_thread.offset + self.prefetch_thread.size) >= (offset + size):
-                if not self.prefetch_thread.complete:
-                    self.prefetch_thread.join()
-
-                data = self.prefetch_thread.data
-                self.prefetch_thread = None
-                return data
-
-        self.prefetch_thread = None
-        self._invoke_prefetch(path, offset, size)
-        self.prefetch_thread.join()
         data = self.prefetch_thread.data
         self.prefetch_thread = None
         return data
@@ -810,11 +813,19 @@ class ftp_client(object):
         logger.info("read : %s, off(%d), size(%d)" % (path, offset, size))
         buf = None
         try:
+            sb = self.stat(path)
+            if offset >= sb.size:
+                # EOF
+                buf = BytesIO()
+                return buf.getvalue()
+
             time1 = datetime.now()
             buf = self._get_prefetch_data(path, offset, size)
             #buf = self.session.read_data(path, offset, size)
-            if len(buf) == size:
-                self._invoke_prefetch(path, offset + size, size)
+            read_len = len(buf)
+            if read_len + offset < sb.size:
+                self._invoke_prefetch(path, offset + read_len, size)
+
             time2 = datetime.now()
             delta = time2 - time1
             logger.info("read: took - %s" % delta)
