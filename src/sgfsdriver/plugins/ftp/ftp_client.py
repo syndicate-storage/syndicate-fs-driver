@@ -43,6 +43,7 @@ METADATA_CACHE_SIZE = 10000
 METADATA_CACHE_TTL = 60 * 60     # 1 hour
 
 FTP_TIMEOUT = 5 * 60    # 5 min
+FTP_OPERATION_TIMEOUT = 30  # 30 sec
 BYTES_MAX_SKIP = 1024 * 1024 * 2 # 2MB
 CONNECTIONS_MAX_NUM = 5
 
@@ -134,7 +135,7 @@ class ftp_session(object):
         self.lock()
         try:
             ftp_session = ftplib.FTP()
-            ftp_session.connect(self.host, self.port)
+            ftp_session.connect(self.host, self.port, FTP_OPERATION_TIMEOUT)
             ftp_session.login(self.user, self.password)
             self.session = ftp_session
             logger.info("new ftp session to %s:%d - %d" % (self.host, self.port, id(self.session)))
