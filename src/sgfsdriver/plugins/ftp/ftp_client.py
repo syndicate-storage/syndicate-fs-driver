@@ -46,8 +46,6 @@ FTP_TIMEOUT = 5 * 60    # 5 min
 BYTES_MAX_SKIP = 1024 * 1024 * 2 # 2MB
 CONNECTIONS_MAX_NUM = 5
 
-downloader_sessions = {}
-
 
 """
 Interface class to FTP
@@ -114,19 +112,163 @@ class downloader_connection(object):
         self._lock.release()
 
 
-class downloader_session(object):
+class ftp_session(object):
     def __init__(self,
                  host,
                  port=21,
-                 session=None):
+                 user="anonymous",
+                 password="anonymous@email.com"):
          self.host = host
          self.port = port
-         self.session = session
+         self.user = user
+         self.password = password
+
+         self.session = None
+         self.last_comm = None
+
          self.connections = {}
          self._lock = threading.RLock()
 
+    def connect(self):
+        logger.info("connect session")
+        self.lock()
+        try:
+            ftp_session = ftplib.FTP()
+            ftp_session.connect(self.host, self.port)
+            ftp_session.login(self.user, self.password)
+            ftp_session.set_debuglevel(2)
+            self.session = ftp_session
+            logger.info("new ftp session to %s:%d - %d" % (self.host, self.port, id(self.session)))
+            self.last_comm = datetime.now()
+        finally:
+            self.unlock()
+
+    def close(self):
+        logger.info("close session")
+        self.lock()
+        for connection in self.connections.values():
+            logger.info("_close_connection : %s" % connection.path)
+
+            connection.lock()
+            try:
+                conn = connection.connection
+                conn.close()
+                self.session.voidresp()
+            except ftplib.error_temp:
+                # abortion of transfer causes this type of error
+                pass
+            except EOFError:
+                pass
+
+            del self.connections[connection.path]
+            connection.unlock()
+
+        try:
+            logger.info("close ftp session to %s:%d - %d" % (self.host, self.port, id(self.session)))
+            self.session.close()
+        finally:
+            self.session = None
+            self.last_comm = None
+            self.unlock()
+
+    def reconnect(self):
+        logger.info("reconnect session")
+        self.lock()
+        self.close()
+        self.connect()
+        self.unlock()
+
+    def reconnect_if_needed(self):
+        expired = True
+        reconnected = False
+
+        if self.last_comm:
+            delta = datetime.now() - self.last_comm
+            if delta.total_seconds() < FTP_TIMEOUT:
+                expired = False
+
+        if expired:
+            # perform a short command then reconnect at fail
+            logger.info("reconnect_if_needed: expired - check live")
+            self.lock()
+            try:
+                self.pwd()
+                reconnected = False
+            except:
+                self.reconnect()
+                reconnected = True
+            finally:
+                self.unlock()
+        else:
+            reconnected = False
+
+        return reconnected
+
+    def retrlines(self, op, callback):
+        logger.info("retrlines")
+        self.lock()
+        try:
+            self.session.retrlines(op, callback)
+            self.last_comm = datetime.now()
+        finally:
+            self.unlock()
+
+    def pwd(self):
+        logger.info("pwd")
+        self.lock()
+        try:
+            self.session.pwd()
+            self.last_comm = datetime.now()
+        finally:
+            self.unlock()
+
+    def cwd(self, path):
+        logger.info("cwd - %s" % path)
+        self.lock()
+        try:
+            self.session.cwd(path)
+            self.last_comm = datetime.now()
+        finally:
+            self.unlock()
+
+    def mkd(self, path):
+        logger.info("mkd - %s" % path)
+        self.lock()
+        try:
+            self.session.mkd(path)
+            self.last_comm = datetime.now()
+        finally:
+            self.unlock()
+
+    def storbinary(self, op, path, buf, rest):
+        logger.info("storbinary - %s" % path)
+        self.lock()
+        try:
+            self.session.storbinary("%s %s" % (op, path), buf, rest=rest)
+            self.last_comm = datetime.now()
+        finally:
+            self.unlock()
+
+    def delete(self, path):
+        logger.info("delete - %s" % path)
+        self.lock()
+        try:
+            self.session.delete(path)
+            self.last_comm = datetime.now()
+        finally:
+            self.unlock()
+
+    def rename(self, path1, path2):
+        logger.info("rename - %s => %s" % (path1, path2))
+        self.lock()
+        try:
+            self.session.rename(path1, path2)
+            self.last_comm = datetime.now()
+        finally:
+            self.unlock()
+
     def __repr__(self):
-        return "<downloader_session host(%s) port(%d)>" % \
+        return "<ftp_session host(%s) port(%d)>" % \
             (self.host, self.port)
 
     def lock(self):
@@ -139,11 +281,14 @@ class downloader_session(object):
         logger.info("_new_connection : %s, off(%d)" % (path, offset))
 
         self.lock()
-        self.session.voidcmd("TYPE I")
-        conn = self.session.transfercmd("RETR %s" % path, offset)
-        connection = downloader_connection(path, conn, offset, datetime.now())
-        self.connections[path] = connection
-        self.unlock()
+        try:
+            self.session.voidcmd("TYPE I")
+            conn = self.session.transfercmd("RETR %s" % path, offset)
+            connection = downloader_connection(path, conn, offset, datetime.now())
+            self.connections[path] = connection
+            self.last_comm = datetime.now()
+        finally:
+            self.unlock()
         return connection
 
     def _close_connection(self, connection):
@@ -273,28 +418,6 @@ class downloader_session(object):
         self.unlock()
         return buf.getvalue()
 
-    def close(self):
-        self.lock()
-        for connection in self.connections.values():
-            logger.info("_close_connection : %s" % connection.path)
-
-            connection.lock()
-            try:
-                conn = connection.connection
-                conn.close()
-                self.session.voidresp()
-            except ftplib.error_temp:
-                # abortion of transfer causes this type of error
-                pass
-
-            del self.connections[path]
-            connection.unlock()
-
-        self.unlock()
-
-    def quit(self):
-        self.session.quit()
-        self.session = None
 
 class prefetch_task(threading.Thread):
     def __init__(self,
@@ -312,18 +435,24 @@ class prefetch_task(threading.Thread):
         self.path = kwargs["path"]
         self.offset = kwargs["offset"]
         self.size = kwargs["size"]
+        self.ftp_client = kwargs["ftp_client"]
         self.complete = False
+        self.data = None
 
     def run(self):
         logger.info("prefetch_task : %s:%d - %s, off(%d), size(%d)" % (self.host, self.port, self.path, self.offset, self.size))
-        key = "%s:%d" % (self.host, self.port)
-        session = downloader_sessions[key]
+        session = self.ftp_client.get_download_session()
+        session.lock()
+        buf = None
         try:
+            session.reconnect_if_needed()
             buf = session.read_data(self.path, self.offset, self.size)
             logger.info("prefetch_task: read done")
         except Exception, e:
             logger.error("prefetch_task: " + traceback.format_exc())
             traceback.print_exc()
+        finally:
+            session.unlock()
 
         self.data = buf
         self.complete = True
@@ -351,8 +480,9 @@ class ftp_client(object):
         else:
             self.password = "anonymous@email.com"
 
-        self.session = None
-        self.last_comm = None
+        self.session = ftp_session(self.host, self.port, self.user, self.password)
+        self.download_session = ftp_session(self.host, self.port, self.user, self.password)
+
         self.mlsd_supported = True
         self.prefetch_thread = None
 
@@ -364,31 +494,16 @@ class ftp_client(object):
 
     def connect(self):
         logger.info("connect: connecting to FTP server (%s)" % self.host)
-        ftp_session = ftplib.FTP()
-        ftp_session.connect(self.host, self.port)
-        ftp_session.login(self.user, self.password)
-        self.last_comm = datetime.now()
-
-        key = "%s:%d" % (self.host, self.port)
-        self.session = downloader_session(self.host, self.port, ftp_session)
-        downloader_sessions[key] = self.session
+        self.session.connect()
+        self.download_session.connect()
 
     def close(self):
         try:
             logger.info("close: closing a connectinn to FTP server (%s)" % self.host)
-            key = "%s:%d" % (self.host, self.port)
-            del downloader_sessions[key]
-
             self.session.close()
-            self.session.quit()
-            self.last_comm = None
+            self.download_session.close()
         except:
             pass
-
-    def reconnect(self):
-        logger.info("reconnect: reconnecting to FTP server (%s)" % self.host)
-        self.close()
-        self.connect()
 
     def __enter__(self):
         self.connect()
@@ -396,6 +511,9 @@ class ftp_client(object):
 
     def __exit__(self, exc_type, exc_value, traceback):
         self.close()
+
+    def get_download_session(self):
+        return self.download_session
 
     def _parse_MLSD(self, parent, line):
         # modify=20170623195719;perm=adfr;size=454060;type=file;unique=13U670966;UNIX.group=570;UNIX.mode=0444;UNIX.owner=14; gbrel.txt
@@ -531,44 +649,18 @@ class ftp_client(object):
         else:
             return None
 
-    def _reconnect_when_needed(self):
-        expired = True
-        if self.last_comm:
-            delta = datetime.now() - self.last_comm
-            if delta.total_seconds() < FTP_TIMEOUT:
-                expired = False
-
-        if expired:
-            # perform a short command then reconnect at fail
-            logger.info("_reconnect_when_needed: expired - check live")
-            self.session.lock()
-            try:
-                self.session.close()
-                self.session.session.pwd()
-                self.last_comm = datetime.now()
-                return False
-            except:
-                self.reconnect()
-                return True
-            finally:
-                self.session.unlock()
-        else:
-            return False
-
     def _list_dir_and_stat_MLSD(self, path):
         logger.info("_list_dir_and_stat_MLSD: retrlines with MLSD - %s" % path)
         stats = []
-        self.session.lock()
         try:
             entries = []
             try:
-                self.session.session.retrlines("MLSD", entries.append)
+                self.session.retrlines("MLSD", entries.append)
             except ftplib.error_perm, e:
                 msg = str(e)
                 if "500" in msg or "unknown command" in msg.lower():
                     raise MLSD_NOT_SUPPORTED("MLSD is not supported")
 
-            self.last_comm = datetime.now()
             for ent in entries:
                 st = self._parse_MLSD(path, ent)
                 if st:
@@ -576,19 +668,15 @@ class ftp_client(object):
         except ftplib.error_perm:
             logger.error("_list_dir_and_stat_MLSD: " + traceback.format_exc())
             traceback.print_exc()
-        finally:
-            self.session.unlock()
 
         return stats
 
     def _list_dir_and_stat_LIST(self, path):
         logger.info("_list_dir_and_stat_LIST: retrlines with LIST - %s" % path)
         stats = []
-        self.session.lock()
         try:
             entries = []
-            self.session.session.retrlines("LIST", entries.append)
-            self.last_comm = datetime.now()
+            self.session.retrlines("LIST", entries.append)
             for ent in entries:
                 st = self._parse_LIST(path, ent)
                 if st:
@@ -596,8 +684,6 @@ class ftp_client(object):
         except ftplib.error_perm:
             logger.error("_list_dir_and_stat_LIST: " + traceback.format_exc())
             traceback.print_exc()
-        finally:
-            self.session.unlock()
 
         return stats
 
@@ -607,10 +693,9 @@ class ftp_client(object):
             return self.meta_cache[path]
 
         logger.info("_ensureDirEntryStatLoaded: loading - %s" % path)
-        self._reconnect_when_needed()
         self.session.lock()
-        self.session.session.cwd(path)
-        self.session.unlock()
+        self.session.reconnect_if_needed()
+        self.session.cwd(path)
 
         stats = []
         if self.mlsd_supported:
@@ -622,12 +707,13 @@ class ftp_client(object):
         else:
             stats = self._list_dir_and_stat_LIST(path)
 
+        self.session.unlock()
         self.meta_cache[path] = stats
         return stats
 
     def _invoke_prefetch(self, path, offset, size):
         logger.info("_invoke_prefetch : %s, off(%d), size(%d)" % (path, offset, size))
-        self.prefetch_thread = prefetch_task(name="prefetch_task_thread", kwargs={'host':self.session.host, 'port':self.session.port, 'path':path, 'offset':offset, 'size':size})
+        self.prefetch_thread = prefetch_task(name="prefetch_task_thread", kwargs={'host':self.session.host, 'port':self.session.port, 'path':path, 'offset':offset, 'size':size, 'ftp_client':self})
         self.prefetch_thread.start()
 
     def _get_prefetch_data(self, path, offset, size):
@@ -690,13 +776,12 @@ class ftp_client(object):
     def make_dirs(self, path):
         logger.info("make_dirs: %s" % path)
         if not self.exists(path):
-            # make parent dir first
-            self._reconnect_when_needed()
-            self.make_dirs(os.path.dirname(path))
             self.session.lock()
-            self.session.session.mkd(path)
+            # make parent dir first
+            self.reconnect_if_needed()
+            self.make_dirs(os.path.dirname(path))
+            self.session.mkd(path)
             self.session.unlock()
-            self.last_comm = datetime.now()
             # invalidate stat cache
             self.clear_stat_cache(os.path.dirname(path))
 
@@ -725,10 +810,7 @@ class ftp_client(object):
             self.meta_cache.clear()
 
     def read(self, path, offset, size):
-        logger.info(
-            "read : %s, off(%d), size(%d)" %
-            (path, offset, size)
-        )
+        logger.info("read : %s, off(%d), size(%d)" % (path, offset, size))
         buf = None
         try:
             time1 = datetime.now()
@@ -748,24 +830,17 @@ class ftp_client(object):
         return buf
 
     def write(self, path, offset, buf):
-        logger.info(
-            "write : %s, off(%d), size(%d)" %
-            (path, offset, len(buf)))
+        logger.info("write : %s, off(%d), size(%d)" % (path, offset, len(buf)))
         try:
             logger.info("write: writing buffer %d" % len(buf))
 
             bio = BytesIO()
             bio.write(buf)
             bio.seek(0)
-            self._reconnect_when_needed()
             self.session.lock()
-            self.session.session.storbinary(
-                "STOR %s" % path,
-                bio,
-                rest=offset
-            )
+            self.session.reconnect_if_needed()
+            self.session.storbinary("STOR", path, bio, offset)
             self.session.unlock()
-            self.last_comm = datetime.now()
             logger.info("write: writing done")
         except Exception, e:
             logger.error("write: " + traceback.format_exc())
@@ -783,13 +858,11 @@ class ftp_client(object):
         logger.info("unlink : %s" % path)
         try:
             logger.info("unlink: deleting a file - %s" % path)
-            self._reconnect_when_needed()
             self.session.lock()
-            self.session.session.delete(path)
+            self.session.reconnect_if_needed()
+            self.session.delete(path)
             self.session.unlock()
-            self.last_comm = datetime.now()
             logger.info("unlink: deleting done")
-
         except Exception, e:
             logger.error("unlink: " + traceback.format_exc())
             traceback.print_exc()
@@ -802,13 +875,11 @@ class ftp_client(object):
         logger.info("rename : %s -> %s" % (path1, path2))
         try:
             logger.info("rename: renaming a file - %s to %s" % (path1, path2))
-            self._reconnect_when_needed()
             self.session.lock()
-            self.session.session.rename(path1, path2)
+            self.session.reconnect_if_needed()
+            self.session.rename(path1, path2)
             self.session.unlock()
-            self.last_comm = datetime.now()
             logger.info("rename: renaming done")
-
         except Exception, e:
             logger.error("rename: " + traceback.format_exc())
             traceback.print_exc()
