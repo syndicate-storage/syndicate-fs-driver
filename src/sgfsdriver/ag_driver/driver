@@ -294,7 +294,7 @@ def _resync(paths):
         entry_st = fs.stat(entry_path)
         if entry_st:
             if entry_st.directory:
-                if (entry_st.symlink and follow_symlink) or (not st.symlink):
+                if (entry_st.symlink and follow_symlink) or (not entry_st.symlink):
                     fs.clear_cache(entry_path)
                     sub_entries = fs.list_dir(entry_path)
                     if sub_entries:
