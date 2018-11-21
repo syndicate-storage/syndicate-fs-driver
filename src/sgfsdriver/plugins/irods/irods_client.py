@@ -19,12 +19,16 @@
 import traceback
 import os
 import logging
+import time
+import threading
 
+from datetime import datetime
 from irods.session import iRODSSession
 from irods.models import DataObject
 from irods.meta import iRODSMeta
 from irods.exception import CollectionDoesNotExist, DataObjectDoesNotExist
 from expiringdict import ExpiringDict
+from io import BytesIO
 
 logger = logging.getLogger('irods_client')
 logger.setLevel(logging.DEBUG)
@@ -39,7 +43,10 @@ fh.setFormatter(formatter)
 logger.addHandler(fh)
 
 METADATA_CACHE_SIZE = 10000
-METADATA_CACHE_TTL = 60     # 60 sec
+METADATA_CACHE_TTL = 60 * 60     # 1 hour
+
+IRODS_TIMEOUT = 5 * 60    # 5 min
+OBJECTS_MAX_NUM = 5
 
 """
 Interface class to iRODS
@@ -95,6 +102,220 @@ class irods_status(object):
             (rep_d, self.name, self.size, self.checksum)
 
 
+class irods_object(object):
+    def __init__(self,
+                 path,
+                 dataobj,
+                 offset=0,
+                 last_comm=0):
+         self.path = path
+         self.offset = offset
+         self.dataobj = dataobj
+         self.last_comm = last_comm
+         self._lock = threading.RLock()
+
+    def __repr__(self):
+        return "<irods_object path(%s) off(%d) last_comm(%s)>" % \
+            (self.path, self.offset, self.last_comm)
+
+    def lock(self):
+        self._lock.acquire()
+
+    def unlock(self):
+        self._lock.release()
+
+
+class irods_object_pool(object):
+    def __init__(self):
+         self.session = None
+         self.last_comm = None
+
+         self.objects = {}
+         self._lock = threading.RLock()
+
+    def init(self, session):
+        self.session = session
+
+    def clear(self):
+        logger.info("close")
+        self.lock()
+
+        for obj in self.objects.values():
+            logger.info("close : %s" % obj.path)
+
+            obj.lock()
+            try:
+                obj.dataobj.close()
+            except:
+                pass
+
+            del self.objects[obj.path]
+            obj.unlock()
+
+        self.unlock()
+
+    def lock(self):
+        self._lock.acquire()
+
+    def unlock(self):
+        self._lock.release()
+
+    def _new_dataobject(self, path, offset=0):
+        logger.info("_new_dataobject : %s, off(%d)" % (path, offset))
+
+        self.lock()
+        try:
+            obj = self.session.data_objects.get(path)
+            f = obj.open('r')
+            if offset != 0:
+                f.seek(offset)
+
+            dataobj = irods_object(path, f, offset, datetime.now())
+            self.objects[path] = dataobj
+            self.last_comm = datetime.now()
+        finally:
+            self.unlock()
+        return dataobj
+
+    def _close_dataobject(self, obj):
+        path = obj.path
+        logger.info("_close_dataobject : %s" % path)
+
+        self.lock()
+        obj.lock()
+        try:
+            f = obj.dataobj
+            f.close()
+            self.last_comm = datetime.now()
+        finally:
+            del self.objects[path]
+            obj.unlock()
+            self.unlock()
+
+    def _get_dataobject(self, path, offset):
+        obj = None
+        logger.info("_get_dataobject : %s, off(%d)" % (path, offset))
+
+        self.lock()
+
+        if path in self.objects:
+            obj = self.objects[path]
+            if obj:
+                reusable = False
+                obj.lock()
+
+                time_delta = datetime.now() - obj.last_comm
+                if time_delta.total_seconds() < IRODS_TIMEOUT:
+                    reusable = True
+
+                obj.unlock()
+
+                if not reusable:
+                    self._close_dataobject(obj)
+                    obj = None
+
+        if len(self.objects) >= OBJECTS_MAX_NUM:
+            # remove oldest
+            oldest = None
+            for live_obj in self.objects.values():
+                if not oldest:
+                    oldest = live_obj
+                else:
+                    if oldest.last_comm > live_obj.last_comm:
+                        oldest = live_obj
+
+            if oldest:
+                self._close_dataobject(oldest)
+
+        if obj:
+            obj.lock()
+
+            # may need to move offset
+            if offset != obj.offset:
+                f = obj.dataobj
+                f.seek(offset)
+                obj.offset = offset
+
+                obj.last_comm = datetime.now()
+                self.last_comm = datetime.now()
+        else:
+            obj = self._new_dataobject(path, offset)
+            obj.lock()
+
+        self.unlock()
+        return obj
+
+    def read_data(self, path, offset, size):
+        logger.info("read_data : %s, off(%d), size(%d)" % (path, offset, size))
+
+        #obj is locked
+        self.lock()
+        obj = self._get_dataobject(path, offset)
+
+        EOF = False
+
+        if obj.offset != offset:
+            obj.unlock()
+            self._close_dataobject(obj)
+            obj = self._new_dataobject(path, offset)
+            obj.lock()
+            #raise Exception("Connection does not have right offset %d - %d" % (connection.offset, offset))
+
+        f = obj.dataobj
+        buf = f.read(size)
+        data_len = len(buf)
+        obj.offset = obj.offset + data_len
+
+        if data_len == 0:
+            EOF = True
+
+        obj.last_comm = datetime.now()
+
+        obj.unlock()
+
+        if EOF:
+            self._close_dataobject(obj)
+
+        self.unlock()
+        return buf
+
+
+class prefetch_task(threading.Thread):
+    def __init__(self,
+                 group=None,
+                 target=None,
+                 name=None,
+                 args=(),
+                 kwargs=None,
+                 verbose=None):
+        threading.Thread.__init__(self, group=group, target=target, name=name, verbose=verbose)
+        self.args = args
+        self.kwargs = kwargs
+        self.session = kwargs["session"]
+        self.path = kwargs["path"]
+        self.offset = kwargs["offset"]
+        self.size = kwargs["size"]
+        self.irods_client = kwargs["irods_client"]
+        self.complete = False
+        self.data = None
+
+    def run(self):
+        logger.info("prefetch_task : %s, off(%d), size(%d)" % (self.path, self.offset, self.size))
+        object_pool = self.irods_client.get_object_pool()
+        object_pool.lock()
+        buf = None
+        try:
+            buf = object_pool.read_data(self.path, self.offset, self.size)
+            logger.info("prefetch_task: read done")
+        except Exception, e:
+            logger.error("prefetch_task: " + traceback.format_exc())
+        finally:
+            object_pool.unlock()
+
+        self.data = buf
+        self.complete = True
+
+
 class irods_client(object):
     def __init__(self,
                  host=None,
@@ -111,6 +332,9 @@ class irods_client(object):
         self.password = password
         self.zone = zone
         self.session = None
+        self.object_pool = irods_object_pool()
+
+        self.prefetch_thread = None
 
         # init cache
         self.meta_cache = ExpiringDict(
@@ -119,6 +343,7 @@ class irods_client(object):
         )
 
     def connect(self):
+        logger.info("connect: connecting to iRODS server (%s)" % self.host)
         self.session = iRODSSession(
             host=self.host,
             port=self.port,
@@ -126,9 +351,14 @@ class irods_client(object):
             password=self.password,
             zone=self.zone
         )
+        self.object_pool.init(self.session)
 
     def close(self):
-        self.session.cleanup()
+        try:
+            self.object_pool.clear()
+            self.session.cleanup()
+        except:
+            pass
 
     def reconnect(self):
         self.close()
@@ -140,6 +370,9 @@ class irods_client(object):
 
     def __exit__(self, exc_type, exc_value, traceback):
         self.close()
+
+    def get_object_pool(self):
+        return self.object_pool
 
     def _ensureDirEntryStatLoaded(self, path):
         # reuse cache
@@ -156,6 +389,31 @@ class irods_client(object):
 
         self.meta_cache[path] = stats
         return stats
+
+    def _invoke_prefetch(self, path, offset, size):
+        logger.info("_invoke_prefetch : %s, off(%d), size(%d)" % (path, offset, size))
+        self.prefetch_thread = prefetch_task(name="prefetch_task_thread", kwargs={'session':self.session, 'path':path, 'offset':offset, 'size':size, 'irods_client':self})
+        self.prefetch_thread.start()
+
+    def _get_prefetch_data(self, path, offset, size):
+        logger.info("_get_prefetch_data : %s, off(%d), size(%d)" % (path, offset, size))
+        invoke_new_thread = False
+        if self.prefetch_thread:
+            if not self.prefetch_thread.complete:
+                self.prefetch_thread.join()
+
+            if self.prefetch_thread.path != path or self.prefetch_thread.offset != offset or self.prefetch_thread.size != size:
+                invoke_new_thread = True
+        else:
+            invoke_new_thread = True
+
+        if invoke_new_thread:
+            self._invoke_prefetch(path, offset, size)
+            self.prefetch_thread.join()
+
+        data = self.prefetch_thread.data
+        self.prefetch_thread = None
+        return data
 
     """
     Returns irods_status
@@ -234,32 +492,27 @@ class irods_client(object):
         )
         buf = None
         try:
-            logger.info("read: opening a file - %s" % path)
-            obj = self.session.data_objects.get(path)
-            with obj.open('r') as f:
-                if offset != 0:
-                    logger.info("read: seeking at %d" % offset)
-                    new_offset = f.seek(offset)
-                    if new_offset != offset:
-                        logger.error(
-                            "read: offset mismatch - requested(%d), "
-                            "but returned(%d)" %
-                            (offset, new_offset))
-                        raise Exception(
-                            "read: offset mismatch - requested(%d), "
-                            "but returned(%d)" %
-                            (offset, new_offset))
+            sb = self.stat(path)
+            if offset >= sb.size:
+                # EOF
+                buf = BytesIO()
+                return buf.getvalue()
 
-                logger.info("read: reading size - %d" % size)
-                buf = f.read(size)
-                logger.info("read: read done")
+            time1 = datetime.now()
+            buf = self._get_prefetch_data(path, offset, size)
+            read_len = len(buf)
+            if read_len + offset < sb.size:
+                self._invoke_prefetch(path, offset + read_len, size)
+
+            time2 = datetime.now()
+            delta = time2 - time1
+            logger.info("read: took - %s" % delta)
+            logger.info("read: read done")
 
         except Exception, e:
             logger.error("read: " + traceback.format_exc())
-            traceback.print_exc()
             raise e
 
-        #logger.info("read: returning the buf(" + buf + ")")
         return buf
 
     def write(self, path, offset, buf):
@@ -399,22 +652,3 @@ class irods_client(object):
             raise e
 
         return keys
-
-    def download(self, path, to):
-        obj = self.session.data_objects.get(path)
-        with obj.open('r') as f:
-            try:
-                with open(to, 'w') as wf:
-                    while(True):
-                        buf = f.read(1024*1024)
-
-                        if not buf:
-                            break
-
-                        wf.write(buf)
-            except Exception, e:
-                logger.error("download: " + traceback.format_exc())
-                traceback.print_exc()
-                raise e
-
-        return to
